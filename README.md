@@ -8,7 +8,8 @@ AI 世代的二手交易平台（交易為主、社交為輔）。Next.js 16 + S
 ```bash
 npm install
 npm run dev          # http://localhost:3000
-npm test             # 21 個單元測試：防詐、估價、品味向量、交易流程、Muse 串接（模擬 API）
+npm test             # 55 個單元測試：防詐、估價、品味向量、交易流程、原子操作、Muse（模擬 API）、帳號刪除、輸入驗證
+npm run build && npm run start:demo   # 以 production 模式跑 demo（必須明確 APP_MODE=demo）
 ```
 
 不設任何環境變數即為 **Demo 模式**：記憶體假資料，5 個示範帳號、12 件物品，免金鑰可完整體驗。
@@ -68,19 +69,55 @@ MUSE_MODEL=muse-spark-1.1       # 有新版可改，例如官方公布的 1.3 ID
 
 ## 接上 Supabase
 
-1. 建立 Supabase 專案，SQL Editor 依序執行 `supabase/schema.sql`、`supabase/seed.sql`。
-2. Vault 建立加密金鑰：`select vault.create_secret('<隨機長字串>', 'pii_key');`
-3. 複製 `.env.example` 為 `.env.local`，填入 URL 與 service role key，重啟即自動切換。
+**SQL 執行順序**（SQL Editor，全部可重複執行）：
 
-`npm run seed:sql` 會由 `lib/data/seed.ts` 重新產生 `seed.sql`，確保兩種模式資料一致。
+1. `supabase/schema.sql`：資料表、RLS、pgvector、Vault 加密函式
+2. `supabase/seed.sql`：示範資料（選用；`npm run seed:sql` 由 `lib/data/seed.ts` 重新產生）
+3. `supabase/migrations/001_auth.sql`：Auth 使用者刪除時連動刪 profile
+4. `supabase/migrations/002_storage_realtime.sql`：照片 bucket `listing-photos`、messages 加入 Realtime
+5. `supabase/migrations/003_server_only_writes.sql`：交易資料改為伺服器寫入，前端只讀
+6. `supabase/migrations/004_hardening.sql`：原子操作函式、profiles 前端唯讀且不含 `taste_vec`、Storage 只允許伺服器寫入、檢舉在被檢舉者刪帳號後保留（`target_ref` 雜湊）
 
-## 原型限制（上線前必做）
+再到 Vault 建立加密金鑰：`select vault.create_secret('<隨機長字串>', 'pii_key');`
 
-- **登入**：目前用 cookie 切換示範帳號。Supabase 模式也是如此，**不可直接對外部署**；第一階段改接 Supabase Auth（簡訊 OTP／Google），`lib/session.ts` 改讀 `auth.getUser()`。
-- **AI**：未設 Muse 金鑰時，辨識、議價、防詐分類是本地規則；品味 embedding 目前一律是雜湊向量（Meta 的 Muse 開發者頁面未提到 embedding 端點，正式版需另選 embedding 模型，並調整 schema 的 256 維）。Muse 串接只用模擬 API 測過，接上真金鑰後請先跑一次上架與聊天流程確認回應格式。
-- **照片**：demo 以 data URL 存記憶體；正式版改 Supabase Storage。
-- **聊天同步**：2.5 秒輪詢；Supabase 模式可改 Realtime 訂閱（`ChatRoom.tsx` 註解有寫法，schema 已加入 publication）。
-- **成交更新**：目前在應用層；前端直連後改為 security definer 函式，避免竄改成交數。
+**環境變數**：複製 `.env.example` 為 `.env.local`，設 `APP_MODE=supabase`、`NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`（登入與 Realtime 用）、`SUPABASE_SERVICE_ROLE_KEY`（伺服器寫入用，必填）。正式環境未設 `APP_MODE` 又缺 Supabase 變數時會直接報錯，不會默默退回可切換身分的 demo 模式。
+
+### 安全模型
+
+- **寫入只走伺服器**：上架、出價、聊天、成交、檢舉、個人資料都經 server action，用 service role 寫入；前端（anon key＋使用者 JWT）只能讀，且 RLS 只給對話雙方讀訊息。前端無法把訊息 `risk` 改成 `none` 繞過防詐，也無法竄改成交數或信任分數。
+- **原子操作**：接受出價（`accept_offer`）、標記成交（`complete_deal`）、瀏覽數（`increment_views`）、有效檢舉（`add_valid_report`）都是資料庫函式，鎖列後一次完成。同一件物品不會被接受兩次；同一對買賣家重複成交只計一次，防止分身刷分。
+- **登入後的跳轉**：`/auth/callback` 只允許站內白名單路徑（`lib/safe-redirect.ts`）。
+- **聯絡方式遮蔽**：先去除零寬字元、全形轉半形，再比對與遮蔽同一個字串；含 Email 規則。
+- **照片**：伺服器端以 sharp 重新編碼，移除 EXIF／GPS，送 Muse 前也一樣；驗證格式、大小與檔頭。
+- **AI 警示文字**：Muse 只回傳固定代碼，畫面顯示固定中文標籤，不顯示模型產生的文字（防止借平台警示框釣魚）。
+- **限流**：AI 辨識每小時 20 次、議價建議 60 次、Muse 防詐檢查 200 次（超過只跑規則）。目前是單機記憶體版本，多台部署要換 Redis／Upstash（`lib/ratelimit.ts`）。
+
+### 照片、即時聊天、刪除帳號
+
+- **照片 Storage**：`lib/storage.ts#savePhoto` 重新編碼後以 service role 上傳，`listings.photo_url` 存 public URL；上架失敗會刪除剛上傳的照片。demo 模式存 data URL。
+- **Realtime**：`ChatRoom.tsx` 用帶登入 session 的瀏覽器 client 訂閱 `messages` INSERT，2.5 秒輪詢保留為後備。
+- **刪除帳號**：「我的」頁底部，輸入顯示名稱確認。先把因本人出價而保留中的他人物品改回上架，再刪 Supabase Auth 使用者（失敗會回報，不會假裝成功）、profile、照片資料夾。別人對本人的檢舉會保留，作為防詐證據。
+
+## 登入（Supabase Auth）
+
+Demo 模式維持原樣（右上角切換示範帳號）。Supabase 模式改為真正登入：
+
+1. Authentication → Providers：啟用 **Email**（OTP／magic link）與 **Google**（填入 Google Cloud OAuth Client ID／Secret；Google 端的 redirect URI 用 `https://<project>.supabase.co/auth/v1/callback`）。
+2. Authentication → URL Configuration：Site URL 設為網站網址，Redirect URLs 加入 `<site>/auth/callback`（本機開發加 `http://localhost:3000/auth/callback`）。
+3. 想用 6 位數驗證碼登入：Email Templates 的 Magic Link 範本加入 `{{ .Token }}`。
+
+流程：`/login`（Email 驗證碼或 Google）→ `/auth/callback` 交換 session → 第一次登入到 `/onboarding` 填暱稱、面交區域、興趣 → 伺服器建立 profile（id = `auth.users.id`）。
+探索頁可未登入瀏覽（契合 % 不顯示）；上架、出價、聊天、我的需要登入。`proxy.ts`（Next 16 取代 `middleware.ts`）負責刷新 session。
+
+- **簡訊 OTP**：設 `NEXT_PUBLIC_AUTH_PHONE=1` 顯示「手機簡訊」分頁；需先在 Supabase 啟用 Phone provider 並設定簡訊供應商（會產生費用）。
+- **Agent 端點**：Supabase 模式下 `/api/mcp` 改用 `Authorization: Bearer <access token>`，`x-agent-for` 只在 demo 模式有效。
+
+## 尚未完成／未驗證
+
+- **沒有接過真的 Supabase 專案**：SQL 已在本機 Postgres 16（以替身模擬 Supabase 的 auth、storage、pgvector）實際執行兩次並驗證原子操作與權限；但登入、Google OAuth、Storage 上傳、Realtime 推送、`auth.admin.deleteUser` 都只通過型別檢查。第一次部署請照「體驗流程」完整跑一遍。
+- **AI**：Muse 只用模擬 API 測過；品味 embedding 仍是雜湊向量（需另選 embedding 模型並調整 256 維）。
+- **評價系統**：信任分數的「好評率」尚無資料來源，目前一律顯示「尚無評價」。
+- **照片上傳**：仍經 server action（4 MB 上限），之後可改 signed upload URL 直傳。
 - 黑名單只有 3 筆示範資料；正式版匯入 165 公開資料到 `scam_blocklist`（只存雜湊）。
 
 ## 結構
@@ -88,9 +125,10 @@ MUSE_MODEL=muse-spark-1.1       # 有新版可改，例如官方公布的 1.3 ID
 ```
 app/                頁面與 server actions（探索、上架、物品、出價聊天、我的、API）
 components/         共用 UI（卡片、信任徽章、行情條、封鎖檢舉）
-lib/ai/             vision・pricing・embedding・scam・negotiate
+lib/ai/             vision・pricing・embedding・scam・negotiate・muse・smart
+lib/supabase/       Supabase Auth（server／browser client）
 lib/data/           Repo 介面＋demo（記憶體）／supabase 兩種實作、seed
 lib/services.ts     商業邏輯（只依賴 Repo 介面）
-supabase/           schema.sql（RLS、pgvector、Vault 加密）、seed.sql
+supabase/           schema.sql、seed.sql、migrations/001–004
 tests/              vitest
 ```

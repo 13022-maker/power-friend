@@ -24,7 +24,12 @@ export function computeTrust(p: Profile, now = Date.now()): TrustBreakdown {
     { label: "手機驗證", points: p.verificationLevel >= 1 ? 15 : 0, hint: "完成簡訊驗證 +15" },
     { label: "自拍驗證碼", points: p.verificationLevel >= 2 ? 20 : 0, hint: "手持驗證碼自拍（AI 活體檢查）+20" },
     { label: "成交紀錄", points: Math.min(30, p.deals * 2), hint: "每筆雙方確認成交 +2，上限 30" },
-    { label: "好評率", points: p.deals > 0 ? Math.round((p.positiveRate - 0.8) * 25) : 0, hint: "好評率 80% 以上加分、以下扣分" },
+    // 評價系統尚未上線：positiveRate 0 視為「尚無評價」，不加不扣（避免有成交的人被誤扣 20 分）
+    {
+      label: "好評率",
+      points: p.deals > 0 && p.positiveRate > 0 ? Math.round((p.positiveRate - 0.8) * 25) : 0,
+      hint: p.positiveRate > 0 ? "好評率 80% 以上加分、以下扣分" : "尚無評價",
+    },
     { label: "帳齡", points: accountAgeDays(p, now) >= 30 ? 10 : 0, hint: "滿 30 天 +10" },
     { label: "有效檢舉", points: -15 * p.validReports, hint: "每筆有效檢舉 −15" },
   ];

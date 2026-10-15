@@ -5,12 +5,13 @@ import { computeTrust } from "@/lib/trust";
 import { AREAS, formatNTD } from "@/lib/catalog";
 import { resetDemo } from "@/app/actions";
 import { Thumb } from "@/components/ui";
+import { DeleteAccount } from "./DeleteAccount";
 
 export default async function MePage() {
   const me = await currentUser();
   const r = repo();
   const t = computeTrust(me);
-  const listings = (await r.listListings()).filter((l) => l.sellerId === me.id);
+  const listings = (await r.listListings({ includeSold: true })).filter((l) => l.sellerId === me.id); // 自己的上架含已售出
 
   return (
     <>
@@ -70,7 +71,7 @@ export default async function MePage() {
           <a className="btn ghost small" href="/api/me/export" download>
             匯出我的資料（JSON）
           </a>
-          <span className="muted">依個資法提供完整副本；刪除帳號需 email 確認（第一階段開放）。</span>
+          <span className="muted">依個資法提供完整副本。</span>
         </div>
         {r.mode === "demo" && (
           <form action={resetDemo} className="row">
@@ -79,6 +80,9 @@ export default async function MePage() {
           </form>
         )}
       </div>
+
+      <h2>刪除帳號</h2>
+      <DeleteAccount displayName={me.displayName} demo={r.mode === "demo"} />
     </>
   );
 }

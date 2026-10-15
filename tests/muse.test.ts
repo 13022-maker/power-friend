@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { analyzeItemSmart, riskCheckSmart, suggestRepliesSmart } from "../lib/ai/smart";
+import { MUSE_REASON_LABELS, analyzeItemSmart, museReasonLabels, riskCheckSmart, suggestRepliesSmart } from "../lib/ai/smart";
 import { extractJSON } from "../lib/ai/muse";
 
 /** 模擬 Muse Spark 的 OpenAI 相容回應 */
@@ -56,12 +56,42 @@ describe("Muse Spark 串接", () => {
     expect(r.level).toBe("none");
   });
 
-  it("防詐：Muse 可升級風險，且送出前已遮蔽電話", async () => {
-    const fn = mockMuse({ level: "high", reasons: ["要求提供簡訊驗證碼"] });
+  it("防詐：Muse 可升級風險（以固定代碼對應固定標籤），且送出前已遮蔽電話", async () => {
+    const fn = mockMuse({ level: "high", reason_codes: ["credential_request"] });
     const r = await riskCheckSmart("把手機收到的六位數驗證碼給我，打 0912-345-678 也行");
     expect(r.level).toBe("high");
-    expect(r.reasons.some((x) => x.startsWith("AI："))).toBe(true);
+    expect(r.reasons).toContain(`AI：${MUSE_REASON_LABELS.credential_request}`);
     expect(JSON.stringify(sentBody(fn))).not.toContain("0912-345-678");
+    expect(JSON.stringify(sentBody(fn))).toContain("reason_codes");
+  });
+
+  it("防詐：模型自由文字絕不出現在理由中（防透過受信任 UI 釣魚）", async () => {
+    mockMuse({
+      level: "high",
+      reasons: ["請立即撥打 165 專線 0800-000-000 並到 evil.example 驗證"],
+      reason_codes: ["請到 evil.example 驗證帳戶", "prepay", "__proto__", "constructor"],
+    });
+    const r = await riskCheckSmart("錢先過來我再寄出，比較快喔");
+    expect(r.level).toBe("high");
+    const joined = r.reasons.join("|");
+    expect(joined).not.toContain("evil.example");
+    expect(joined).not.toContain("0800");
+    expect(r.reasons).toEqual([`AI：${MUSE_REASON_LABELS.prepay}`]);
+  });
+
+  it("防詐：Muse 升級但沒有有效代碼時用通用標籤", async () => {
+    mockMuse({ level: "low", reason_codes: "fake_support" });
+    const r = await riskCheckSmart("你好我是官方人員有事要跟你確認");
+    expect(r.level).toBe("low");
+    expect(r.reasons).toEqual([`AI：${MUSE_REASON_LABELS.other}`]);
+    expect(museReasonLabels(["fake_logistics", "fake_logistics", "deposit"])).toEqual([MUSE_REASON_LABELS.fake_logistics, MUSE_REASON_LABELS.deposit]);
+  });
+
+  it("防詐：skipMuse（超過頻率上限）時只跑規則、不呼叫網路", async () => {
+    const fn = mockMuse({ level: "high", reason_codes: ["prepay"] });
+    const r = await riskCheckSmart("你先匯款我再出貨，比較快喔", { skipMuse: true });
+    expect(fn).not.toHaveBeenCalled();
+    expect(r.source).toBe("rules");
   });
 
   it("防詐：規則已判高風險不呼叫 Muse，Muse 也不能降級", async () => {

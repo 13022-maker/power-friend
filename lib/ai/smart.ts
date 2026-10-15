@@ -12,6 +12,9 @@ import { estimatePrice } from "./pricing";
 import { riskCheck, type RiskResult } from "./scam";
 import { suggestReplies, type NegotiationContext, type Suggestion } from "./negotiate";
 import { isMuseEnabled, museJSON, MuseError, type ChatMessage } from "./muse";
+import { MUSE_REASON_CODES, MUSE_REASON_LABELS, museReasonLabels } from "./risk-labels";
+
+export { MUSE_REASON_LABELS, museReasonLabels };
 
 const log = (where: string, e: unknown) => console.warn(`[muse:${where}] 退回本地規則：`, e instanceof Error ? e.message : e);
 
@@ -54,8 +57,8 @@ export async function analyzeItemSmart(hint: string, fileName = "", photo?: stri
       ],
       { maxTokens: 600 },
     );
-    const category = CAT_KEYS.includes(r.category as Category) ? (r.category as Category) : base.category;
-    const condition = COND_KEYS.includes(r.condition as Condition) ? (r.condition as Condition) : base.condition;
+    const category = typeof r.category === "string" && Object.hasOwn(CATEGORIES, r.category) ? (r.category as Category) : base.category;
+    const condition = typeof r.condition === "string" && Object.hasOwn(CONDITIONS, r.condition) ? (r.condition as Condition) : base.condition;
     const originalPrice =
       typeof r.original_price === "number" && r.original_price > 0 && r.original_price < 5_000_000
         ? Math.round(r.original_price)
@@ -90,17 +93,21 @@ export async function analyzeItemSmart(hint: string, fileName = "", photo?: stri
 
 interface MuseRisk {
   level?: string;
-  reasons?: string[];
+  reason_codes?: unknown;
 }
 
+/**
+ * Muse 只能回傳固定代碼（見 risk-labels.ts），對應到固定的中文標籤顯示。
+ * 絕不把模型自由文字放進受害者看到的紅色警告（否則可用 prompt injection 讓「官方警告」說出釣魚內容）。
+ */
 export interface SmartRisk extends RiskResult {
   source: "rules" | "muse";
 }
 
-export async function riskCheckSmart(text: string): Promise<SmartRisk> {
+export async function riskCheckSmart(text: string, opts: { skipMuse?: boolean } = {}): Promise<SmartRisk> {
   const rules = riskCheck(text);
-  // 規則已判高風險就不必再花 token；太短的訊息（嗯、好、謝謝）也略過
-  if (!isMuseEnabled() || rules.level === "high" || text.trim().length < 6) return { ...rules, source: "rules" };
+  // 規則已判高風險就不必再花 token；太短的訊息（嗯、好、謝謝）也略過；超過頻率上限時只跑規則
+  if (opts.skipMuse || !isMuseEnabled() || rules.level === "high" || text.trim().length < 6) return { ...rules, source: "rules" };
   try {
     const r = await museJSON<MuseRisk>(
       [
@@ -109,7 +116,8 @@ export async function riskCheckSmart(text: string): Promise<SmartRisk> {
           content:
             "你是台灣二手交易平台的防詐審查員。判斷這則買賣雙方的聊天訊息是否為詐騙話術" +
             "（假物流/假客服/要求先匯款/保證金/引導點連結/冒充官方/索取驗證碼或帳戶資料）。" +
-            '只回傳 JSON：{"level":"none"|"low"|"high","reasons":[簡短中文理由]}。一般議價、約面交一律 none。',
+            `只回傳 JSON：{"level":"none"|"low"|"high","reason_codes":[${MUSE_REASON_CODES.map((c) => JSON.stringify(c)).join("|")} 之一，可多個]}。` +
+            "不要輸出其他文字。一般議價、約面交一律 none。",
         },
         { role: "user", content: rules.masked }, // 已遮蔽聯絡方式
       ],
@@ -118,7 +126,10 @@ export async function riskCheckSmart(text: string): Promise<SmartRisk> {
     const level = (["none", "low", "high"] as RiskLevel[]).includes(r.level as RiskLevel) ? (r.level as RiskLevel) : "none";
     const rank = { none: 0, low: 1, high: 2 };
     const final = rank[level] > rank[rules.level] ? level : rules.level; // 只升不降
-    const extra = final !== rules.level ? (r.reasons ?? []).slice(0, 3).map((x) => `AI：${x}`) : [];
+    // 只顯示固定標籤；模型沒給有效代碼時用「其他可疑話術」
+    let labels = museReasonLabels(r.reason_codes);
+    if (labels.length === 0) labels = [MUSE_REASON_LABELS.other];
+    const extra = final !== rules.level ? labels.map((x) => `AI：${x}`) : [];
     return { level: final, reasons: [...rules.reasons, ...extra], masked: rules.masked, source: "muse" };
   } catch (e) {
     log("risk", e);

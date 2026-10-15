@@ -6,8 +6,8 @@ import type { Category } from "@/lib/types";
 
 /**
  * 給外部 AI agent 的工具端點（JSON-RPC 2.0，對齊 MCP 的 initialize / tools/list / tools/call）。
- * 原型以 header `x-agent-for: <user id>` 表示「代表哪位使用者」；
- * 正式版改為 OAuth 授權＋使用者設定的底價與次數上限，且每筆 agent 出價都標記 aiDrafted、可由本人撤回。
+ * 身分：Demo 模式用 header `x-agent-for`；Supabase 模式用 `Authorization: Bearer <access token>`（見 resolveAgentUser）。
+ * 正式版再加上 OAuth 授權範圍＋使用者設定的底價與次數上限，且每筆 agent 出價都標記 aiDrafted、可由本人撤回。
  */
 
 const TOOLS = [
@@ -40,6 +40,24 @@ const TOOLS = [
   },
 ];
 
+/**
+ * 決定 agent 代表哪位使用者：
+ * - Demo 模式：header `x-agent-for: <user id>`（方便本機測試）。
+ * - Supabase 模式：只接受 `Authorization: Bearer <access token>`，由 Supabase Auth 驗證；忽略 x-agent-for。
+ */
+async function resolveAgentUser(req: Request) {
+  const r = repo();
+  if (r.mode === "demo") {
+    const agentFor = req.headers.get("x-agent-for");
+    return agentFor ? r.getProfile(agentFor) : null;
+  }
+  const m = /^Bearer\s+(\S+)$/i.exec(req.headers.get("authorization") ?? "");
+  if (!m) return null;
+  const { userIdFromAccessToken } = await import("@/lib/supabase/server");
+  const uid = await userIdFromAccessToken(m[1]);
+  return uid ? r.getProfile(uid) : null;
+}
+
 type RpcReq = { jsonrpc: "2.0"; id?: string | number; method: string; params?: Record<string, unknown> };
 
 const ok = (id: RpcReq["id"], result: unknown) => NextResponse.json({ jsonrpc: "2.0", id, result });
@@ -60,15 +78,21 @@ export async function POST(req: Request) {
   if (method === "tools/list") return ok(id, { tools: TOOLS });
   if (method !== "tools/call") return fail(id, -32601, `Unknown method ${method}`);
 
-  const agentFor = req.headers.get("x-agent-for");
-  const user = agentFor ? await repo().getProfile(agentFor) : null;
-  if (!user) return fail(id, -32001, "缺少 x-agent-for 或使用者不存在（正式版改為 OAuth 授權）");
+  const user = await resolveAgentUser(req);
+  if (!user)
+    return fail(
+      id,
+      -32001,
+      repo().mode === "demo"
+        ? "缺少 x-agent-for 或使用者不存在（Demo 模式）"
+        : "需要 Authorization: Bearer <Supabase access token>，且帳號已建立個人檔案",
+    );
 
   const name = params.name as string;
   const args = (params.arguments ?? {}) as Record<string, unknown>;
 
   if (name === "search_listings") {
-    const cat = typeof args.category === "string" && args.category in CATEGORIES ? (args.category as Category) : "";
+    const cat = typeof args.category === "string" && Object.hasOwn(CATEGORIES, args.category) ? (args.category as Category) : "";
     const items = await explore(user, { mode: "likely", category: cat, q: (args.query as string) ?? "" });
     const max = typeof args.max_price === "number" ? args.max_price : Infinity;
     return text(

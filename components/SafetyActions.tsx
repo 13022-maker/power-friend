@@ -2,8 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { reportAction, toggleBlockAction } from "@/app/actions";
+import { REPORT_REASONS } from "@/lib/validation";
 
-const REASONS = ["疑似詐騙", "要求私下交易／先匯款", "騷擾或不當言語", "商品與描述不符"];
+const REASONS = REPORT_REASONS;
 
 /** 封鎖、檢舉分開（借鏡 Alovoa：block / hide / report 三種動作） */
 export function SafetyActions({ targetId, blocked }: { targetId: string; blocked: boolean }) {

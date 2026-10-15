@@ -4,12 +4,23 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { chatSuggestAction, completeDealAction, sendMessageAction } from "@/app/actions";
 import type { Suggestion } from "@/lib/ai/negotiate";
 import type { Message } from "@/lib/types";
+import { messageFromRow, realtimeClient } from "@/lib/realtime";
+import { displayRiskReasons } from "@/lib/ai/risk-labels";
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
 
+/** 依 id 去重並依時間排序 */
+function mergeMessages(prev: Message[], incoming: Message[]): Message[] {
+  const byId = new Map(prev.map((m) => [m.id, m]));
+  for (const m of incoming) byId.set(m.id, m);
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 /**
- * 原型以 2.5 秒輪詢同步訊息；接 Supabase 後可改為 Realtime 訂閱 messages 表
- * （supabase.channel(...).on('postgres_changes', { table: 'messages', filter: `conversation_id=eq.${id}` }, …)）。
+ * 訊息同步：
+ * - Supabase 模式：Realtime 訂閱 messages INSERT（conversation_id=eq.<id>），新訊息即時出現。
+ * - 輪詢（2.5 秒）一律保留作為後備：demo 模式、頻道未 SUBSCRIBED、或 RLS 尚未讓 Realtime 送出資料時都靠它。
+ *   確認 Realtime 真的送到過資料後，輪詢放慢到 15 秒當保險。
  */
 export function ChatRoom({
   conversationId,
@@ -36,11 +47,45 @@ export function ChatRoom({
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const t = setInterval(async () => {
-      const res = await fetch(`/api/conversations/${conversationId}/messages`, { cache: "no-store" });
-      if (res.ok) setMsgs(await res.json());
-    }, 2500);
-    return () => clearInterval(t);
+    let cancelled = false;
+    let live = false; // Realtime 已 SUBSCRIBED 且至少送達過一筆
+    let subscribed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/conversations/${conversationId}/messages`, { cache: "no-store" });
+        if (res.ok && !cancelled) {
+          const list = (await res.json()) as Message[];
+          setMsgs((prev) => mergeMessages(prev, list));
+        }
+      } catch {
+        // 網路暫時失敗：下一輪再試
+      }
+      if (!cancelled) timer = setTimeout(poll, live && subscribed ? 15_000 : 2500);
+    };
+    timer = setTimeout(poll, 2500);
+
+    const sb = realtimeClient();
+    const channel = sb
+      ?.channel(`messages:${conversationId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${conversationId}` },
+        (payload) => {
+          live = true;
+          setMsgs((prev) => mergeMessages(prev, [messageFromRow(payload.new as Record<string, unknown>)]));
+        },
+      )
+      .subscribe((status) => {
+        subscribed = status === "SUBSCRIBED";
+      });
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      if (sb && channel) void sb.removeChannel(channel);
+    };
   }, [conversationId]);
 
   useEffect(() => {
@@ -52,7 +97,7 @@ export function ChatRoom({
       setErr(undefined);
       const r = await sendMessageAction(conversationId, text, aiDrafted);
       if (!r.ok) return setErr(r.error);
-      setMsgs((m) => [...m, r.message]);
+      setMsgs((m) => mergeMessages(m, [r.message]));
       setText("");
       setAiDrafted(false);
       setSugs(undefined);
@@ -66,7 +111,7 @@ export function ChatRoom({
           const cls = m.senderId === "system" ? "sys" : mine ? "me" : "";
           return (
             <div key={m.id} className={`bubble ${cls} ${m.risk !== "none" ? `risk-${m.risk}` : ""}`}>
-              {m.risk === "high" && !mine && <strong style={{ color: "var(--danger)", display: "block" }}>⚠ 高風險訊息：{m.riskReasons.join("、")}。請勿匯款或點連結。</strong>}
+              {m.risk === "high" && !mine && <strong style={{ color: "var(--danger)", display: "block" }}>⚠ 高風險訊息：{displayRiskReasons(m.riskReasons).join("、")}。請勿匯款或點連結。</strong>}
               {m.body}
               <span className="meta">
                 {time(m.createdAt)}
@@ -99,7 +144,13 @@ export function ChatRoom({
         <div className="notice err">此對話已封鎖。</div>
       ) : (
         <div className="chat-input">
-          <button className="btn ghost small" title="AI 議價助手" disabled={pending} onClick={() => start(async () => setSugs(await chatSuggestAction(conversationId)))}>
+          <button className="btn ghost small" title="AI 議價助手" disabled={pending} onClick={() =>
+              start(async () => {
+                const r = await chatSuggestAction(conversationId);
+                if (r.ok) setSugs(r.data);
+                else setErr(r.error);
+              })
+            }>
             AI
           </button>
           <input

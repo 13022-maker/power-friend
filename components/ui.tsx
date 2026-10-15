@@ -36,10 +36,10 @@ export function TrustBadge({ profile }: { profile: Profile }) {
   );
 }
 
-export function ListingCard({ l }: { l: RankedListing }) {
+export function ListingCard({ l, showFit = true }: { l: RankedListing; showFit?: boolean }) {
   return (
     <Link href={`/listing/${l.id}`} className="card">
-      <Thumb category={l.category} photo={l.photo} fit={l.tasteFit} status={l.status} />
+      <Thumb category={l.category} photo={l.photo} fit={showFit ? l.tasteFit : undefined} status={l.status} />
       <div className="card-body">
         <div className="card-title">{l.title}</div>
         <div className="row" style={{ justifyContent: "space-between" }}>

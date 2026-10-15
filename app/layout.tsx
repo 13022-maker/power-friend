@@ -2,7 +2,8 @@ import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { repo } from "@/lib/data";
-import { currentUserId } from "@/lib/session";
+import { currentUserId, currentUserOrNull, authUser } from "@/lib/session";
+import { logout } from "@/app/actions";
 import { UserSwitcher } from "@/components/UserSwitcher";
 import { isMuseEnabled } from "@/lib/ai/muse";
 
@@ -17,7 +18,11 @@ export const dynamic = "force-dynamic";
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const r = repo();
-  const [profiles, uid] = await Promise.all([r.listProfiles(), currentUserId()]);
+  const demo = r.mode === "demo";
+  // demo：示範帳號切換；supabase：真正登入（未登入也能看探索頁）
+  const [profiles, uid] = demo ? await Promise.all([r.listProfiles(), currentUserId()]) : [[], ""];
+  const me = demo ? null : await currentUserOrNull();
+  const signedIn = !demo && !me ? await authUser() : null; // 已登入但尚未建立 profile
 
   return (
     <html lang="zh-Hant-TW">
@@ -38,7 +43,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <span className="mode-pill">
               {r.mode === "demo" ? "Demo 資料" : "Supabase"}・AI：{isMuseEnabled() ? "Muse Spark" : "本地規則"}
             </span>
-            <UserSwitcher users={profiles.map((p) => ({ id: p.id, name: p.displayName }))} current={uid} />
+            {demo ? (
+              <UserSwitcher users={profiles.map((p) => ({ id: p.id, name: p.displayName }))} current={uid} />
+            ) : me || signedIn ? (
+              <form action={logout} className="row" style={{ gap: 8 }}>
+                {me ? <Link href="/me">{me.displayName}</Link> : <Link href="/onboarding">完成註冊</Link>}
+                <button className="btn ghost small">登出</button>
+              </form>
+            ) : (
+              <Link href="/login" className="btn small">登入</Link>
+            )}
           </div>
         </header>
         <main className="shell">{children}</main>

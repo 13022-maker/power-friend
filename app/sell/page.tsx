@@ -1,7 +1,9 @@
 import { SellForm } from "./SellForm";
 import { isMuseEnabled } from "@/lib/ai/muse";
+import { currentUser } from "@/lib/session";
 
-export default function SellPage() {
+export default async function SellPage() {
+  await currentUser(); // Supabase 模式：未登入導向 /login
   return (
     <>
       <h1>拍照即上架</h1>

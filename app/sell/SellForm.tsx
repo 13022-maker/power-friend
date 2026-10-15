@@ -48,7 +48,9 @@ export function SellForm({ museEnabled }: { museEnabled: boolean }) {
 
   const runAI = () =>
     startAnalyze(async () => {
-      const r = await analyzeAction(hint, fileName, photo);
+      const res = await analyzeAction(hint, fileName, photo);
+      if (!res.ok) return setMsg({ kind: "err", text: res.error });
+      const r = res.data;
       setAi(r);
       setForm({ title: r.title, description: r.description, category: r.category, condition: r.condition, price: String(r.price.mid), original: r.originalPrice ? String(r.originalPrice) : "" });
       setMsg(undefined);

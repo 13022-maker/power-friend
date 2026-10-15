@@ -1,5 +1,7 @@
 -- POWER Friend 以物會友二手市集 · Supabase schema
 -- 在 Supabase SQL Editor 依序執行：schema.sql → seed.sql
+-- 之後再依編號執行 supabase/migrations/*.sql（001_auth.sql：Supabase Auth 的 RLS 與 trigger）
+-- 本檔可重複執行；但重跑後請再依序重跑 migrations/001→004（004_hardening 會收回本檔建立的部分權限與政策）。
 -- 原型向量維度 256（對應 lib/ai/embedding.ts）；換成多模態 embedding 模型時改維度並重建索引。
 
 create extension if not exists vector;
@@ -151,8 +153,8 @@ language sql stable as $$
   limit k;
 $$;
 
--- 成交後更新（雙方成交數 +1、買家品味向量混入物品向量）目前在應用層 lib/services.ts completeDeal 執行；
--- 第一階段前端直連後，改寫成 security definer 函式 complete_deal(conversation_id)，避免使用者自行竄改成交數。
+-- 接受出價、成交更新（雙方成交數 +1、買家品味向量）、瀏覽數、有效檢舉數的原子操作
+-- 見 migrations/004_hardening.sql（accept_offer、complete_deal、increment_views、add_valid_report；僅 service role 可呼叫）。
 
 -- ───────────── RLS ─────────────
 -- 伺服器端用 service role 會略過 RLS；以下規則保護未來前端直連（anon key + Supabase Auth）。
@@ -172,37 +174,61 @@ create or replace function is_blocked(a text, b text) returns boolean language s
   select exists (select 1 from blocks where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a));
 $$;
 
+drop policy if exists "profiles readable" on profiles;
 create policy "profiles readable" on profiles for select using (true);
+drop policy if exists "profiles self update" on profiles;
 create policy "profiles self update" on profiles for update using (id = auth.uid()::text);
 
+drop policy if exists "private self only" on profiles_private;
 create policy "private self only" on profiles_private for select using (id = auth.uid()::text);
 
+drop policy if exists "listings readable unless blocked" on listings;
 create policy "listings readable unless blocked" on listings for select
   using (status <> 'sold' and not is_blocked(auth.uid()::text, seller_id) or seller_id = auth.uid()::text);
+drop policy if exists "listings own write" on listings;
 create policy "listings own write" on listings for all using (seller_id = auth.uid()::text) with check (seller_id = auth.uid()::text);
 
+drop policy if exists "offers parties" on offers;
 create policy "offers parties" on offers for select using (auth.uid()::text in (buyer_id, seller_id));
+drop policy if exists "offers buyer insert" on offers;
 create policy "offers buyer insert" on offers for insert
   with check (buyer_id = auth.uid()::text and not is_blocked(buyer_id, seller_id));
+drop policy if exists "offers seller respond" on offers;
 create policy "offers seller respond" on offers for update using (seller_id = auth.uid()::text);
 
+drop policy if exists "conversations parties" on conversations;
 create policy "conversations parties" on conversations for select using (auth.uid()::text in (buyer_id, seller_id));
 
+drop policy if exists "messages parties read" on messages;
 create policy "messages parties read" on messages for select using (
   exists (select 1 from conversations c where c.id = conversation_id and auth.uid()::text in (c.buyer_id, c.seller_id)));
+drop policy if exists "messages parties write" on messages;
 create policy "messages parties write" on messages for insert with check (
   sender_id = auth.uid()::text and exists (
     select 1 from conversations c where c.id = conversation_id
       and auth.uid()::text in (c.buyer_id, c.seller_id)
       and not is_blocked(c.buyer_id, c.seller_id)));
 
+drop policy if exists "blocks own" on blocks;
 create policy "blocks own" on blocks for all using (blocker_id = auth.uid()::text) with check (blocker_id = auth.uid()::text);
+drop policy if exists "reports own insert" on reports;
 create policy "reports own insert" on reports for insert with check (reporter_id = auth.uid()::text);
 -- reports、scam_blocklist 無 select 政策：僅 service role（管理後台）可讀
 
+drop policy if exists "clubs readable" on clubs;
 create policy "clubs readable" on clubs for select using (true);
+drop policy if exists "club members readable" on club_members;
 create policy "club members readable" on club_members for select using (true);
+drop policy if exists "club join self" on club_members;
 create policy "club join self" on club_members for all using (user_id = auth.uid()::text) with check (user_id = auth.uid()::text);
 
--- Realtime：聊天訊息推播
-alter publication supabase_realtime add table messages;
+-- Realtime：聊天訊息推播（冪等：已加入就略過）
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+end $$;

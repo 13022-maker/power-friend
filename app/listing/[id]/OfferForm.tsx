@@ -13,7 +13,12 @@ export function OfferForm({ listingId, price }: { listingId: string; price: numb
   const [result, setResult] = useState<{ ok: boolean; text: string }>();
   const [pending, start] = useTransition();
 
-  const loadSugs = () => start(async () => setSugs(await buyerSuggestAction(listingId)));
+  const loadSugs = () =>
+    start(async () => {
+      const r = await buyerSuggestAction(listingId);
+      if (r.ok) setSugs(r.data);
+      else setResult({ ok: false, text: r.error });
+    });
   const pick = (s: Suggestion) => {
     setMessage(s.text);
     if (s.amount) setAmount(String(s.amount));

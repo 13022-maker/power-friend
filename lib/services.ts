@@ -6,6 +6,8 @@ import { messageHash, riskCheck } from "./ai/scam";
 import { riskCheckSmart } from "./ai/smart";
 import { computeTrust, isTrustworthyReporter } from "./trust";
 import { distanceKm } from "./catalog";
+import { LIMITS, isCategory, isCondition, isReportReason, isValidAmount } from "./validation";
+import { checkLimit } from "./ratelimit";
 
 const DAY = 86_400_000;
 
@@ -68,23 +70,38 @@ export interface NewListingInput {
   photo?: string;
 }
 
-export async function createListing(seller: Profile, input: NewListingInput): Promise<Result<{ id: string }>> {
-  const title = input.title.trim();
-  if (title.length < 2) return { ok: false, error: "請填寫品名" };
-  if (!(input.price > 0)) return { ok: false, error: "請填寫價格" };
+/** 上架欄位驗證（action 層在上傳照片前也先呼叫，避免產生孤兒照片）；通過回傳 null */
+export function validateListingInput(input: Pick<NewListingInput, "title" | "description" | "category" | "condition" | "price">): string | null {
+  const title = String(input.title ?? "").trim();
+  const description = String(input.description ?? "").trim();
+  if (title.length < 2) return "請填寫品名";
+  if (title.length > LIMITS.titleMax) return `品名請在 ${LIMITS.titleMax} 字以內`;
+  if (description.length > LIMITS.descriptionMax) return `說明請在 ${LIMITS.descriptionMax} 字以內`;
+  if (!isCategory(input.category)) return "請選擇有效的分類";
+  if (!isCondition(input.condition)) return "請選擇有效的成色";
+  if (!isValidAmount(input.price)) return "價格請填 1 到 10,000,000 之間的整數";
+  return null;
+}
 
-  const risk = await riskCheckSmart(`${title} ${input.description}`);
+export async function createListing(seller: Profile, input: NewListingInput): Promise<Result<{ id: string }>> {
+  const invalid = validateListingInput(input);
+  if (invalid) return { ok: false, error: invalid };
+  const title = String(input.title).trim();
+  const description = String(input.description ?? "").trim();
+  const originalPrice = isValidAmount(input.originalPrice) ? input.originalPrice : undefined;
+
+  const risk = await riskCheckSmart(`${title} ${description}`);
   if (risk.level === "high") return { ok: false, error: `上架內容疑似詐騙：${risk.reasons.join("、")}` };
 
-  const est = estimatePrice(input.category, input.condition, input.originalPrice && input.originalPrice > 0 ? input.originalPrice : undefined);
+  const est = estimatePrice(input.category, input.condition, originalPrice);
   const listing: Listing = {
     id: newId("l"),
     sellerId: seller.id,
     title: riskCheck(title).masked,
-    description: riskCheck(input.description).masked,
+    description: riskCheck(description).masked,
     category: input.category,
     condition: input.condition,
-    price: Math.round(input.price),
+    price: input.price,
     aiPriceLow: est.low,
     aiPriceHigh: est.high,
     areaId: seller.areaId,
@@ -92,7 +109,7 @@ export async function createListing(seller: Profile, input: NewListingInput): Pr
     status: "active",
     createdAt: new Date().toISOString(),
     views: 0,
-    embedding: embed(`${title} ${input.description}`),
+    embedding: embed(`${title} ${description}`),
   };
   await repo().createListing(listing);
   return {
@@ -106,8 +123,8 @@ export async function viewListing(id: string) {
   const r = repo();
   const l = await r.getListing(id);
   if (l) {
+    await r.incrementViews(id); // 原子 +1，不做 read-modify-write
     l.views += 1;
-    await r.updateListing(l);
   }
   return l;
 }
@@ -126,7 +143,8 @@ export async function createOffer(
   if (!listing || listing.status !== "active") return { ok: false, error: "這件物品已保留或售出" };
   if (listing.sellerId === buyer.id) return { ok: false, error: "不能對自己的物品出價" };
   if (await isBlockedBetween(buyer.id, listing.sellerId)) return { ok: false, error: "你與賣家之間有封鎖紀錄" };
-  if (!(amount > 0)) return { ok: false, error: "請輸入出價金額" };
+  if (!isValidAmount(amount)) return { ok: false, error: "出價請填 1 到 10,000,000 之間的整數" };
+  if (String(message ?? "").length > LIMITS.offerMessageMax) return { ok: false, error: `訊息請在 ${LIMITS.offerMessageMax} 字以內` };
 
   const mine = await r.listOffers({ buyerId: buyer.id });
   if (mine.some((o) => o.listingId === listingId && o.status === "pending")) return { ok: false, error: "你已對這件物品出價，請等賣家回覆" };
@@ -152,7 +170,7 @@ export async function createOffer(
     listingId,
     buyerId: buyer.id,
     sellerId: listing.sellerId,
-    amount: Math.round(amount),
+    amount,
     message: risk.masked,
     messageHash: hash,
     aiDrafted,
@@ -183,11 +201,6 @@ export async function respondOffer(seller: Profile, offerId: string, accept: boo
     await r.updateOffer({ ...offer, status: "declined" });
     return { ok: true };
   }
-  const listing = await r.getListing(offer.listingId);
-  if (!listing || listing.status !== "active") return { ok: false, error: "物品已保留或售出" };
-
-  await r.updateOffer({ ...offer, status: "accepted" });
-  await r.updateListing({ ...listing, status: "reserved" });
   const conv: Conversation = {
     id: newId("c"),
     offerId: offer.id,
@@ -196,8 +209,7 @@ export async function respondOffer(seller: Profile, offerId: string, accept: boo
     sellerId: seller.id,
     createdAt: new Date().toISOString(),
   };
-  await r.createConversation(conv);
-  await r.createMessage({
+  const first: Message = {
     id: newId("m"),
     conversationId: conv.id,
     senderId: offer.buyerId,
@@ -206,7 +218,9 @@ export async function respondOffer(seller: Profile, offerId: string, accept: boo
     risk: "none",
     riskReasons: [],
     createdAt: offer.createdAt,
-  });
+  };
+  // 原子：出價 pending → accepted、物品 active → reserved、建立對話與首訊；並行的兩個接受只會有一個成功
+  if (!(await r.acceptOffer(offer.id, seller.id, conv, first))) return { ok: false, error: "物品已保留或售出" };
   return { ok: true, data: { conversationId: conv.id } };
 }
 
@@ -218,10 +232,12 @@ export async function sendMessage(user: Profile, conversationId: string, body: s
   if (!conv || (conv.buyerId !== user.id && conv.sellerId !== user.id)) return { ok: false, error: "無權限" };
   const other = conv.buyerId === user.id ? conv.sellerId : conv.buyerId;
   if (await isBlockedBetween(user.id, other)) return { ok: false, error: "此對話已封鎖" };
-  const text = body.trim();
+  const text = String(body ?? "").trim();
   if (!text) return { ok: false, error: "訊息是空的" };
+  if (text.length > LIMITS.chatBodyMax) return { ok: false, error: `訊息請在 ${LIMITS.chatBodyMax} 字以內` };
 
-  const risk = await riskCheckSmart(text);
+  // 每人每小時 Muse 風險檢查上限；超過只跑規則層（仍會遮蔽與攔截）
+  const risk = await riskCheckSmart(text, { skipMuse: !checkLimit(user.id, "museRisk") });
   const msg: Message = {
     id: newId("m"),
     conversationId,
@@ -243,13 +259,10 @@ export async function completeDeal(user: Profile, conversationId: string): Promi
   const listing = await r.getListing(conv.listingId);
   if (!listing) return { ok: false, error: "找不到物品" };
   if (listing.status === "sold") return { ok: false, error: "已標記成交" };
-  await r.updateListing({ ...listing, status: "sold" });
-
-  // 對應 DB trigger：雙方成交數 +1、買家品味向量混入此物品
-  const [seller, buyer] = await Promise.all([r.getProfile(conv.sellerId), r.getProfile(conv.buyerId)]);
-  if (seller) await r.updateProfile({ ...seller, deals: seller.deals + 1 });
-  if (buyer) await r.updateProfile({ ...buyer, deals: buyer.deals + 1, tasteVec: blendTaste(buyer.tasteVec, listing.embedding) });
-  await r.createMessage({
+  const buyer = await r.getProfile(conv.buyerId);
+  const buyerTaste = buyer ? blendTaste(buyer.tasteVec, listing.embedding) : [];
+  // 原子：物品 reserved → sold、雙方成交數（同一對買賣雙方只計一次）、買家品味向量、系統訊息
+  const done = await r.completeDeal(conversationId, user.id, buyerTaste, {
     id: newId("m"),
     conversationId,
     senderId: "system",
@@ -259,6 +272,7 @@ export async function completeDeal(user: Profile, conversationId: string): Promi
     riskReasons: [],
     createdAt: new Date().toISOString(),
   });
+  if (!done) return { ok: false, error: "無法標記成交（物品未保留或已成交）" };
   return { ok: true };
 }
 
@@ -275,15 +289,13 @@ export async function toggleBlock(user: Profile, targetId: string): Promise<Resu
 
 export async function report(user: Profile, targetId: string, reason: string): Promise<Result> {
   if (targetId === user.id) return { ok: false, error: "不能檢舉自己" };
+  if (!isReportReason(reason)) return { ok: false, error: "請選擇檢舉理由" };
   const r = repo();
   const dup = (await r.listReports({ reporterId: user.id })).some((x) => x.targetId === targetId);
   if (dup) return { ok: false, error: "你已檢舉過此帳號，審核中" };
   const counted = isTrustworthyReporter(user);
   await r.createReport({ id: newId("r"), reporterId: user.id, targetId, reason, counted, createdAt: new Date().toISOString() });
-  if (counted) {
-    const target = await r.getProfile(targetId);
-    if (target) await r.updateProfile({ ...target, validReports: target.validReports + 1 });
-  }
+  if (counted) await r.incrementValidReports(targetId); // 原子 +1
   return {
     ok: true,
     notice: counted ? "檢舉已送出並計入對方信任分數，同時進入人工審核" : "檢舉已送出，將由人工審核（新帳號的檢舉不直接扣分）",
@@ -294,7 +306,7 @@ export async function exportUserData(userId: string) {
   const r = repo();
   const [profile, listings, offersOut, offersIn, convs, blocks, reports] = await Promise.all([
     r.getProfile(userId),
-    r.listListings(),
+    r.listListings({ includeSold: true }), // 個資匯出要含已售出
     r.listOffers({ buyerId: userId }),
     r.listOffers({ sellerId: userId }),
     r.listConversations(userId),
@@ -302,7 +314,12 @@ export async function exportUserData(userId: string) {
     r.listReports({ reporterId: userId }),
   ]);
   const messages = (await Promise.all(convs.map((c) => r.listMessages(c.id)))).flat().filter((m) => m.senderId === userId);
-  const strip = <T extends { embedding?: number[]; tasteVec?: number[] }>(x: T) => ({ ...x, embedding: undefined, tasteVec: undefined });
+  const strip = <T extends object>(x: T): Omit<T, "embedding" | "tasteVec"> => {
+    const { embedding: _e, tasteVec: _t, ...rest } = x as T & { embedding?: unknown; tasteVec?: unknown };
+    void _e;
+    void _t;
+    return rest as Omit<T, "embedding" | "tasteVec">;
+  };
   return {
     exportedAt: new Date().toISOString(),
     notice: "依個人資料保護法提供之個人資料副本",
@@ -315,4 +332,23 @@ export async function exportUserData(userId: string) {
     blocks: blocks.filter((b) => b.blockerId === userId),
     reportsFiled: reports,
   };
+}
+
+/**
+ * 刪除帳號（個資法；Alovoa 式：需輸入顯示名稱確認，在 action 層檢查）。
+ * 先把「因本人被接受的出價而保留中」的他人物品改回上架，再刪除本人所有資料。
+ */
+export async function deleteAccount(user: Profile): Promise<Result<{ reactivated: number }>> {
+  const r = repo();
+  const accepted = (await r.listOffers({ buyerId: user.id })).filter((o) => o.status === "accepted" && o.sellerId !== user.id);
+  let reactivated = 0;
+  for (const o of accepted) {
+    const l = await r.getListing(o.listingId);
+    if (l && l.status === "reserved") {
+      await r.updateListing({ ...l, status: "active" });
+      reactivated++;
+    }
+  }
+  await r.deleteAccount(user.id);
+  return { ok: true, data: { reactivated } };
 }
