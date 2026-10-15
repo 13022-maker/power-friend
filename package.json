@@ -1,0 +1,28 @@
+{
+  "name": "power-friend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "POWER Friend 以物會友二手市集 — AI 世代的二手交易＋社交 MVP 原型（Next.js + Supabase）",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "seed:sql": "tsx scripts/gen-seed-sql.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "next": "^16.4.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.4"
+  }
+}

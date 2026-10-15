@@ -1,0 +1,110 @@
+import { NextResponse } from "next/server";
+import { repo } from "@/lib/data";
+import { createOffer, explore } from "@/lib/services";
+import { CATEGORIES, formatNTD } from "@/lib/catalog";
+import type { Category } from "@/lib/types";
+
+/**
+ * 給外部 AI agent 的工具端點（JSON-RPC 2.0，對齊 MCP 的 initialize / tools/list / tools/call）。
+ * 原型以 header `x-agent-for: <user id>` 表示「代表哪位使用者」；
+ * 正式版改為 OAuth 授權＋使用者設定的底價與次數上限，且每筆 agent 出價都標記 aiDrafted、可由本人撤回。
+ */
+
+const TOOLS = [
+  {
+    name: "search_listings",
+    description: "以自然語言搜尋二手物品，依『最可能成交』排序。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "例如：適合新手的底片相機" },
+        category: { type: "string", enum: Object.keys(CATEGORIES) },
+        max_price: { type: "number" },
+        limit: { type: "number", default: 5 },
+      },
+    },
+  },
+  {
+    name: "get_listing",
+    description: "取得物品細節與 AI 行情區間。",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "make_offer",
+    description: "代表使用者出價。訊息會標記為 AI 代擬，賣家可見。",
+    inputSchema: {
+      type: "object",
+      properties: { listing_id: { type: "string" }, amount: { type: "number" }, message: { type: "string" } },
+      required: ["listing_id", "amount", "message"],
+    },
+  },
+];
+
+type RpcReq = { jsonrpc: "2.0"; id?: string | number; method: string; params?: Record<string, unknown> };
+
+const ok = (id: RpcReq["id"], result: unknown) => NextResponse.json({ jsonrpc: "2.0", id, result });
+const fail = (id: RpcReq["id"], code: number, message: string) => NextResponse.json({ jsonrpc: "2.0", id, error: { code, message } });
+const text = (id: RpcReq["id"], payload: unknown) => ok(id, { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] });
+
+export async function POST(req: Request) {
+  let body: RpcReq;
+  try {
+    body = await req.json();
+  } catch {
+    return fail(null as unknown as undefined, -32700, "Parse error");
+  }
+  const { id, method, params = {} } = body;
+
+  if (method === "initialize")
+    return ok(id, { protocolVersion: "2025-06-18", serverInfo: { name: "power-friend", version: "0.1.0" }, capabilities: { tools: {} } });
+  if (method === "tools/list") return ok(id, { tools: TOOLS });
+  if (method !== "tools/call") return fail(id, -32601, `Unknown method ${method}`);
+
+  const agentFor = req.headers.get("x-agent-for");
+  const user = agentFor ? await repo().getProfile(agentFor) : null;
+  if (!user) return fail(id, -32001, "缺少 x-agent-for 或使用者不存在（正式版改為 OAuth 授權）");
+
+  const name = params.name as string;
+  const args = (params.arguments ?? {}) as Record<string, unknown>;
+
+  if (name === "search_listings") {
+    const cat = typeof args.category === "string" && args.category in CATEGORIES ? (args.category as Category) : "";
+    const items = await explore(user, { mode: "likely", category: cat, q: (args.query as string) ?? "" });
+    const max = typeof args.max_price === "number" ? args.max_price : Infinity;
+    return text(
+      id,
+      items
+        .filter((l) => l.price <= max && l.status === "active")
+        .slice(0, Number(args.limit ?? 5))
+        .map((l) => ({
+          id: l.id,
+          title: l.title,
+          price: l.price,
+          fair_range: [l.aiPriceLow, l.aiPriceHigh],
+          taste_fit: l.tasteFit,
+          seller_trust: l.trust,
+          distance_km: Math.round(l.distanceKm),
+        })),
+    );
+  }
+
+  if (name === "get_listing") {
+    const l = await repo().getListing(String(args.id));
+    if (!l) return fail(id, -32002, "找不到物品");
+    return text(id, {
+      id: l.id,
+      title: l.title,
+      description: l.description,
+      price: formatNTD(l.price),
+      fair_range: `${formatNTD(l.aiPriceLow)}–${formatNTD(l.aiPriceHigh)}`,
+      status: l.status,
+    });
+  }
+
+  if (name === "make_offer") {
+    const res = await createOffer(user, String(args.listing_id), Number(args.amount), String(args.message ?? ""), true);
+    return res.ok ? text(id, { offer_id: res.data?.id, notice: res.notice ?? null }) : fail(id, -32003, res.error);
+  }
+
+  return fail(id, -32602, `Unknown tool ${name}`);
+}
