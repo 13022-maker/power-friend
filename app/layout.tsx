@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
+import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 import { repo } from "@/lib/data";
 import { currentUserId, currentUserOrNull, authUser } from "@/lib/session";
@@ -62,6 +64,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <Link href="/inbox"><span className="ico">聊</span>出價聊天</Link>
           <Link href="/me"><span className="ico">我</span>我的</Link>
         </nav>
+        <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );
