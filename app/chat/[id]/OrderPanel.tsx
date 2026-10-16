@@ -27,7 +27,8 @@ export function OrderPanel({ order, shipping, blocked }: { order: OrderSummary; 
     storeOrAddress: shipping?.storeOrAddress ?? "",
   }));
 
-  const can = (a: OrderSummary["myActions"][number]) => !blocked && order.myActions.includes(a);
+  // 封鎖時停用其他動作，但「取消訂單」不受影響：否則保留數量會卡死、無法釋出
+  const can = (a: OrderSummary["myActions"][number]) => (a === "cancel_order" || !blocked) && order.myActions.includes(a);
   const isBuyer = order.role === "buyer";
 
   const run = (fn: () => Promise<{ ok: true } | { ok: false; error: string }>, after?: () => void) =>
@@ -79,6 +80,9 @@ export function OrderPanel({ order, shipping, blocked }: { order: OrderSummary; 
       </table>
       {order.isPrepay && order.prepayWarning && order.status === "accepted" && <div className="notice warn">⚠ {order.prepayWarning}</div>}
       <div className="muted">下一步：{order.nextStep}</div>
+      {blocked && order.status === "accepted" && order.myActions.includes("cancel_order") && (
+        <div className="notice warn">已封鎖，可取消訂單釋出數量</div>
+      )}
 
       {order.cod && order.status === "accepted" && (
         <div className="stack" style={{ gap: 8 }}>
