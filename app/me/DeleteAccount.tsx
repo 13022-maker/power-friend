@@ -23,7 +23,7 @@ export function DeleteAccount({ displayName, demo }: { displayName: string; demo
           <li>你的封鎖名單與你送出的檢舉</li>
           {!demo && <li>登入帳號（Supabase Auth）</li>}
         </ul>
-        <div style={{ marginTop: 6 }}>因你的出價而「保留中」的他人物品，會自動改回上架。</div>
+        <div style={{ marginTop: 6 }}>你以買家身分尚未成交的訂單會自動取消（含已寄出的貨到付款），保留的數量釋出給賣家；你填過的收件資訊一併刪除。</div>
       </div>
       <p className="muted" style={{ margin: 0 }}>
         建議先 <a href="/api/me/export" download style={{ textDecoration: "underline" }}>下載個資匯出 JSON</a> 留存副本。

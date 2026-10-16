@@ -240,5 +240,5 @@ export async function deleteAccountAction(confirmName: string): Promise<{ error?
     }
   }
   revalidatePath("/", "layout");
-  redirect("/");
+  redirect(`/?deleted=${res.data?.released ?? 0}`); // released：因刪帳號而取消、釋出保留數量的訂單數
 }
