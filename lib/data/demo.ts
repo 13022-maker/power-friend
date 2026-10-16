@@ -1,6 +1,7 @@
-import type { Block, Conversation, Listing, Message, Offer, Profile, Report } from "../types";
+import type { Block, Conversation, Listing, Message, Offer, Profile, Report, ShippingInfo } from "../types";
 import type { Repo } from "./repo";
 import { seedListings, seedProfiles } from "./seed";
+import { deriveStatus, listingAvailable } from "../payment";
 
 interface Store {
   profiles: Map<string, Profile>;
@@ -10,6 +11,8 @@ interface Store {
   messages: Message[];
   blocks: Block[];
   reports: Report[];
+  /** 收件資訊（offerId → info）；對應 Supabase 的 offer_shipping（加密） */
+  shipping: Map<string, ShippingInfo>;
 }
 
 const g = globalThis as unknown as { __pfStore?: Store };
@@ -24,6 +27,7 @@ function store(): Store {
       messages: [],
       blocks: [],
       reports: [],
+      shipping: new Map(),
     };
   }
   return g.__pfStore;
@@ -59,7 +63,13 @@ export const demoRepo: Repo = {
     store().listings.set(l.id, clone(l));
   },
   async updateListing(l) {
-    store().listings.set(l.id, clone(l));
+    // 只更新可編輯欄位；數量計數與狀態只能經原子操作改變（與 Supabase 實作一致）
+    const s = store();
+    const cur = s.listings.get(l.id);
+    if (!cur) return;
+    const { quantity: _q, reservedQty: _r, soldQty: _s, status: _st, sellerId: _sid, ...editable } = clone(l);
+    void _q, void _r, void _s, void _st, void _sid;
+    Object.assign(cur, editable);
   },
   async incrementViews(listingId) {
     const l = store().listings.get(listingId);
@@ -80,6 +90,12 @@ export const demoRepo: Repo = {
   },
   async updateOffer(o) {
     store().offers.set(o.id, clone(o));
+  },
+  async declineOffer(offerId, sellerId) {
+    const o = store().offers.get(offerId);
+    if (!o || o.sellerId !== sellerId || o.status !== "pending") return false;
+    o.status = "declined";
+    return true;
   },
 
   async listConversations(userId) {
@@ -133,7 +149,10 @@ export const demoRepo: Repo = {
     for (const id of ownListings) s.listings.delete(id);
     // 對應 FK cascade：自己的出價、別人對自己物品的出價
     for (const o of [...s.offers.values()])
-      if (o.buyerId === userId || o.sellerId === userId || ownListings.has(o.listingId)) s.offers.delete(o.id);
+      if (o.buyerId === userId || o.sellerId === userId || ownListings.has(o.listingId)) {
+        s.offers.delete(o.id);
+        s.shipping.delete(o.id); // offer_shipping on delete cascade
+      }
     const convIds = new Set<string>();
     for (const c of [...s.conversations.values()])
       if (c.buyerId === userId || c.sellerId === userId || ownListings.has(c.listingId)) {
@@ -153,9 +172,10 @@ export const demoRepo: Repo = {
     const offer = s.offers.get(offerId);
     if (!offer || offer.status !== "pending" || offer.sellerId !== sellerId) return false;
     const listing = s.listings.get(offer.listingId);
-    if (!listing || listing.status !== "active" || listing.sellerId !== sellerId) return false;
+    if (!listing || listing.sellerId !== sellerId || listingAvailable(listing) < offer.quantity) return false;
     if (s.conversations.has(conv.id)) return false;
-    listing.status = "reserved";
+    listing.reservedQty += offer.quantity;
+    listing.status = deriveStatus(listing);
     offer.status = "accepted";
     // 對話的雙方與物品一律以出價紀錄為準，不信任呼叫端傳入的值
     const c: Conversation = { ...clone(conv), offerId: offer.id, listingId: offer.listingId, buyerId: offer.buyerId, sellerId: offer.sellerId };
@@ -168,16 +188,23 @@ export const demoRepo: Repo = {
     const s = store();
     const conv = s.conversations.get(conversationId);
     if (!conv || conv.sellerId !== sellerId) return false;
-    const listing = s.listings.get(conv.listingId);
-    if (!listing || listing.status !== "reserved") return false;
+    const offer = s.offers.get(conv.offerId);
+    if (!offer || offer.status !== "accepted") return false;
+    if (offer.paymentMethod === "cod" && !offer.shippedAt) return false;
+    const listing = s.listings.get(offer.listingId);
+    if (!listing || listing.reservedQty < offer.quantity) return false;
     // 防洗成交：同一對帳號（不分買賣方向）若已有成交紀錄，這次不再加成交數
-    const pairDealtBefore = [...s.conversations.values()].some(
-      (c) =>
-        c.id !== conv.id &&
-        ((c.buyerId === conv.buyerId && c.sellerId === conv.sellerId) || (c.buyerId === conv.sellerId && c.sellerId === conv.buyerId)) &&
-        s.listings.get(c.listingId)?.status === "sold",
+    const pairDealtBefore = [...s.offers.values()].some(
+      (o) =>
+        o.id !== offer.id &&
+        o.status === "completed" &&
+        ((o.buyerId === offer.buyerId && o.sellerId === offer.sellerId) || (o.buyerId === offer.sellerId && o.sellerId === offer.buyerId)),
     );
-    listing.status = "sold";
+    listing.reservedQty -= offer.quantity;
+    listing.soldQty += offer.quantity;
+    listing.status = deriveStatus(listing);
+    offer.status = "completed";
+    s.shipping.delete(offer.id);
     const seller = s.profiles.get(conv.sellerId);
     const buyer = s.profiles.get(conv.buyerId);
     if (!pairDealtBefore) {
@@ -185,6 +212,55 @@ export const demoRepo: Repo = {
       if (buyer) buyer.deals += 1;
     }
     if (buyer) buyer.tasteVec = [...buyerTaste];
+    s.messages.push({ ...clone(systemMessage), conversationId });
+    return true;
+  },
+
+  async cancelOrder(conversationId, actorId, systemMessage, opts) {
+    const s = store();
+    const conv = s.conversations.get(conversationId);
+    if (!conv || (conv.buyerId !== actorId && conv.sellerId !== actorId)) return false;
+    const offer = s.offers.get(conv.offerId);
+    if (!offer || offer.status !== "accepted") return false;
+    if (offer.shippedAt && actorId !== conv.sellerId && !opts?.allowShipped) return false;
+    const listing = s.listings.get(offer.listingId);
+    if (listing) {
+      listing.reservedQty = Math.max(0, listing.reservedQty - offer.quantity);
+      listing.status = deriveStatus(listing);
+    }
+    offer.status = "cancelled";
+    s.shipping.delete(offer.id);
+    s.messages.push({ ...clone(systemMessage), conversationId });
+    return true;
+  },
+
+  async setShippingInfo(conversationId, buyerId, info) {
+    const s = store();
+    const conv = s.conversations.get(conversationId);
+    if (!conv || conv.buyerId !== buyerId) return false;
+    const offer = s.offers.get(conv.offerId);
+    if (!offer || offer.status !== "accepted" || offer.paymentMethod !== "cod" || offer.shippedAt) return false;
+    s.shipping.set(offer.id, { ...clone(info), offerId: offer.id });
+    return true;
+  },
+
+  async getShippingInfo(conversationId, userId) {
+    const s = store();
+    const conv = s.conversations.get(conversationId);
+    if (!conv || (conv.buyerId !== userId && conv.sellerId !== userId)) return null;
+    const info = s.shipping.get(conv.offerId);
+    return info ? clone(info) : null;
+  },
+
+  async markShipped(conversationId, sellerId, trackingNo, systemMessage) {
+    const s = store();
+    const conv = s.conversations.get(conversationId);
+    if (!conv || conv.sellerId !== sellerId) return false;
+    const offer = s.offers.get(conv.offerId);
+    if (!offer || offer.status !== "accepted" || offer.paymentMethod !== "cod" || offer.shippedAt) return false;
+    if (!s.shipping.has(offer.id)) return false;
+    offer.shippedAt = new Date().toISOString();
+    if (trackingNo) offer.trackingNo = trackingNo;
     s.messages.push({ ...clone(systemMessage), conversationId });
     return true;
   },

@@ -5,7 +5,7 @@ import type { Conversation, Message, Offer } from "../lib/types";
 const now = () => new Date().toISOString();
 
 function offer(id: string, listingId: string, buyerId: string, sellerId: string): Offer {
-  return { id, listingId, buyerId, sellerId, amount: 1000, message: "還在嗎？", messageHash: id, aiDrafted: false, status: "pending", createdAt: now() };
+  return { id, listingId, buyerId, sellerId, amount: 1000, message: "還在嗎？", messageHash: id, aiDrafted: false, status: "pending", createdAt: now(), quantity: 1, paymentMethod: "meetup_cash" };
 }
 function conv(id: string, o: Offer): Conversation {
   return { id, offerId: o.id, listingId: o.listingId, buyerId: o.buyerId, sellerId: o.sellerId, createdAt: now() };
@@ -101,8 +101,9 @@ describe("demo repo 原子操作", () => {
   });
 
   it("listListings：預設不含已售出，includeSold 時包含", async () => {
-    const l = (await demoRepo.getListing("l_fm2"))!;
-    await demoRepo.updateListing({ ...l, status: "sold" });
+    // 狀態只能經原子操作改變：接受 → 成交
+    const { convId } = await acceptNew("s", "l_fm2", "u_an", "u_zhe");
+    expect(await demoRepo.completeDeal(convId, "u_zhe", [], msg("s_s", convId, "system"))).toBe(true);
     expect((await demoRepo.listListings()).some((x) => x.id === "l_fm2")).toBe(false);
     expect((await demoRepo.listListings({ includeSold: true })).some((x) => x.id === "l_fm2")).toBe(true);
   });
