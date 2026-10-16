@@ -24,6 +24,16 @@ npm run build && npm run start:demo   # 以 production 模式跑 demo（必須�
 5. **成交**：「小安」按「面交完成，標記成交」→ 雙方成交數＋1，買家品味向量更新。
 6. **我的**：信任分數組成、個資匯出 JSON。
 
+**多件＋貨到付款（約 2 分鐘）**：seed 的「一番賞 A 賞 公仔 未拆」（`l_figure`，阿哲賣，共 3 件，面交／貨到付款／行動支付，運費 NT$60）。
+
+1. 以「小安」打開該物品：看到「剩 3 件／共 3 件」與三種付款方式。件數填 2、付款方式選「貨到付款」→ 總額即時顯示「單價 × 2 ＋ 運費 60」→ 送出。（改選「行動支付轉帳」會出現先付款防詐提醒。）
+2. 切換成「阿哲」→「出價與聊天」→ 接受。物品變成「剩 1 件」，其他人仍可對剩下的 1 件出價。
+3. 聊天室上方的「訂單」面板：切回「小安」→ 填收件資訊（超商取貨或宅配、姓名、手機、門市或地址），寄出前都能修改。
+4. 「阿哲」看到收件資訊 → 填物流單號（選填）→「標記已寄出」→ 再「買家已取貨付款，標記成交」（未寄出不能成交）。成交後收件資訊自動刪除。
+5. 任一方在成交前都可「取消訂單」（需確認），保留的件數會釋出；已寄出後只有賣家能取消。
+
+多捲合購可改用小安賣的「過期底片 Kodak ColorPlus 單捲」（`l_film`，共 5 件、貨到付款含運；以「阿哲」或「Mia」出價）。
+
 ## 功能對照
 
 | 功能 | 位置 | 借鏡 |
@@ -38,6 +48,9 @@ npm run build && npm run start:demo   # 以 production 模式跑 demo（必須�
 | 封鎖雙向生效、封鎖／檢舉分開 | `toggleBlock`、`supabase/schema.sql` RLS | Alovoa block/report |
 | 個資匯出 | `/api/me/export` | Alovoa GDPR |
 | 給 AI agent 的工具端點（JSON-RPC，對齊 MCP） | `/api/mcp` | — |
+| 多件數量（以件數保留、並行接受不超賣） | `lib/payment.ts#listingAvailable`、`acceptOffer`（Repo，原子） | — |
+| 多種付款方式（先付款類需手機驗證、出價時防詐提醒；平台不經手金流） | `lib/payment.ts`、`createListing` / `createOffer` | — |
+| 貨到付款（收件資訊加密、只限雙方、寄出→成交、取消釋出數量） | `setShippingInfo` / `markShipped` / `cancelOrder`、`app/chat/[id]/OrderPanel.tsx` | — |
 
 ### Agent 端點範例
 
