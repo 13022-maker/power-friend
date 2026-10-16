@@ -102,6 +102,9 @@ MUSE_MODEL=muse-spark-1.1       # 有新版可改，例如官方公布的 1.3 ID
 - **原子操作**：接受出價（`accept_offer`）、標記成交（`complete_deal`）、取消訂單（`cancel_order`）、貨到付款寄出（`mark_shipped`）、瀏覽數（`increment_views`）、有效檢舉（`add_valid_report`）都是資料庫函式，鎖列後一次完成。多件物品以條件式 update 搶可售數量，並行接受不會超賣（另有 check constraint 兜底）；同一對買賣家重複成交只計一次，防止分身刷分。
 - **付款方式**：平台不經手金流，只記錄買賣雙方約定的方式（面交、貨到付款、匯款、行動支付）。先付款類（匯款、行動支付）只限完成手機驗證的賣家開啟，買家選用時固定提醒詐騙風險。
 - **貨到付款收件資訊**：只有該筆訂單的買家可寫、買賣雙方可讀，整包加密存放；成交、取消或刪除帳號即清除。MCP agent 讀寫不到。
+  注意：`set_shipping_info` 以**明文參數**傳進資料庫再於函式內加密（`get_shipping_info` 回傳值也是明文）。正式環境請勿對這些函式開啟 statement log（`log_statement = 'all'`、`log_min_duration_statement` 記錄參數）或 pgaudit 的參數紀錄，否則收件個資會以明文留在資料庫日誌。
+- **運費快照**：出價時把當下的運費存在 offer 上（`offers.shipping_fee`），總額一律以出價上的值計算，賣家之後改運費不影響既有訂單。付款方式與運費不經通用的 `updateListing` 修改；日後開放編輯須另寫 service 重新驗證（先付款類需賣家驗證）。
+- **網址上的錯誤訊息**：`?error=` 只帶固定代碼，頁面以白名單對照中文，查無不顯示，避免被拿來在平台網域上顯示任意文字。
 - **登入後的跳轉**：`/auth/callback` 只允許站內白名單路徑（`lib/safe-redirect.ts`）。
 - **聯絡方式遮蔽**：先去除零寬字元、全形轉半形，再比對與遮蔽同一個字串；含 Email 規則。
 - **照片**：伺服器端以 sharp 重新編碼，移除 EXIF／GPS，送 Muse 前也一樣；驗證格式、大小與檔頭。
@@ -112,7 +115,7 @@ MUSE_MODEL=muse-spark-1.1       # 有新版可改，例如官方公布的 1.3 ID
 
 - **照片 Storage**：`lib/storage.ts#savePhoto` 重新編碼後以 service role 上傳，`listings.photo_url` 存 public URL；上架失敗會刪除剛上傳的照片。demo 模式存 data URL。
 - **Realtime**：`ChatRoom.tsx` 用帶登入 session 的瀏覽器 client 訂閱 `messages` INSERT，2.5 秒輪詢保留為後備。
-- **刪除帳號**：「我的」頁底部，輸入顯示名稱確認。先取消本人作為買家的已接受訂單、釋出保留數量（收件資訊一併刪除），再刪 Supabase Auth 使用者（失敗會回報，不會假裝成功）、profile、照片資料夾。別人對本人的檢舉會保留，作為防詐證據。
+- **刪除帳號**：「我的」頁底部，輸入顯示名稱確認。先取消本人作為買家的已接受訂單、釋出保留數量（收件資訊一併刪除），再刪 Supabase Auth 使用者（失敗會回報，不會假裝成功）、profile、照片資料夾。別人對本人的檢舉會保留，作為防詐證據。取消訂單時寫給賣家的系統訊息（「買方已刪除帳號…」）會隨對話一併被 cascade 刪除，賣家端看到的是對話消失、保留數量已釋出。
 
 ## 登入（Supabase Auth）
 
