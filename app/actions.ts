@@ -138,7 +138,8 @@ export async function respondOfferAction(formData: FormData) {
   revalidatePath("/inbox");
   revalidatePath("/");
   if (res.ok && res.data?.conversationId) redirect(`/chat/${res.data.conversationId}`);
-  if (!res.ok) redirect(`/inbox?error=${encodeURIComponent(res.error)}`); // 例如「剩餘數量不足」
+  // 只帶錯誤代碼（白名單），inbox 依代碼顯示固定中文；不把錯誤字串放進網址
+  if (!res.ok) redirect(`/inbox?error=${svc.respondErrorCode(res.error)}`);
 }
 
 /* 聊天 */

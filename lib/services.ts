@@ -45,6 +45,27 @@ const DAY = 86_400_000;
 
 export type Result<T = undefined> = { ok: true; data?: T; notice?: string } | { ok: false; error: string };
 
+/**
+ * 經網址（?error=）傳遞的錯誤一律只帶代碼，頁面以這份白名單對照中文；查無代碼就不顯示。
+ * 絕不把錯誤字串本身放進網址（否則可被拿來在平台網域上顯示任意釣魚文字）。
+ */
+export const RESPOND_ERROR_CODES = {
+  insufficient: "剩餘數量不足",
+  handled: "這筆出價已處理",
+  not_found: "找不到這筆出價",
+  listing_gone: "找不到物品",
+} as const;
+export type RespondErrorCode = keyof typeof RESPOND_ERROR_CODES;
+/** 錯誤訊息 → 代碼（不在白名單的訊息回傳 "unknown"，頁面顯示通用訊息） */
+export const respondErrorCode = (error: string): RespondErrorCode | "unknown" =>
+  (Object.entries(RESPOND_ERROR_CODES).find(([, v]) => v === error)?.[0] as RespondErrorCode | undefined) ?? "unknown";
+export const respondErrorText = (code: unknown): string | null =>
+  code === "unknown"
+    ? "操作失敗，請重新整理後再試"
+    : typeof code === "string" && Object.hasOwn(RESPOND_ERROR_CODES, code)
+      ? RESPOND_ERROR_CODES[code as RespondErrorCode]
+      : null;
+
 async function blockedSet(userId: string): Promise<Set<string>> {
   const blocks = await repo().listBlocks(userId);
   return new Set(blocks.map((b) => (b.blockerId === userId ? b.blockedId : b.blockerId)));
@@ -252,12 +273,13 @@ export async function createOffer(
     createdAt: new Date().toISOString(),
     quantity,
     paymentMethod,
+    shippingFee: offerShippingFee({ paymentMethod }, listing), // 快照：之後物品改運費不影響這筆
   };
   await r.createOffer(offer);
   const tooLow = amount < listing.aiPriceLow * 0.7;
   return {
     ok: true,
-    data: { id: offer.id, total: offerTotal(offer, listing) },
+    data: { id: offer.id, total: offerTotal(offer) },
     notice: [
       risk.level === "low" ? `已遮蔽：${risk.reasons.join("、")}` : "",
       tooLow ? "出價明顯低於行情，賣家接受機率較低" : "",
@@ -455,7 +477,7 @@ export interface OrderSummary {
   unitPrice: number;
   /** 單價 × 數量 */
   subtotal: number;
-  /** 貨到付款時為物品運費（0 表示含運），其他付款方式為 0 */
+  /** 出價當下快照的運費（貨到付款才有；0 表示含運），其他付款方式為 0 */
   shippingFee: number;
   /** subtotal + shippingFee */
   total: number;
@@ -491,7 +513,7 @@ export async function getOrderSummary(user: Profile, conversationId: string): Pr
     r.getListing(conv.listingId),
     offer.paymentMethod === "cod" ? r.getShippingInfo(conversationId, user.id) : Promise.resolve(null),
   ]);
-  const shippingFee = listing ? offerShippingFee(offer, listing) : 0;
+  const shippingFee = offer.shippingFee; // 出價當下的快照
   const subtotal = offer.amount * offer.quantity;
   const isCod = offer.paymentMethod === "cod";
   const open = offer.status === "accepted";

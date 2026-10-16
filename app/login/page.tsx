@@ -5,8 +5,16 @@ import { LoginForm } from "./LoginForm";
 
 export const metadata = { title: "登入・POWER Friend" };
 
+const LOGIN_ERRORS: Record<string, string> = {
+  oauth: "第三方登入未完成或被取消",
+  exchange: "驗證連結無效或已過期",
+  missing: "驗證連結不完整",
+};
+
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const sp = await searchParams;
+  // 只認白名單代碼，查無則不顯示（不把網址參數原文顯示在頁面上）
+  const errorText = typeof sp.error === "string" && Object.hasOwn(LOGIN_ERRORS, sp.error) ? LOGIN_ERRORS[sp.error] : null;
   if (!isAuthMode()) {
     return (
       <>
@@ -23,7 +31,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
     <>
       <h1>登入 POWER Friend</h1>
       <p className="lead">用 Email 驗證碼或 Google 帳號登入，第一次登入會請你設定暱稱與面交區域。</p>
-      {sp.error && <p className="notice err" style={{ maxWidth: 420 }}>登入失敗：{sp.error.slice(0, 120)}，請再試一次。</p>}
+      {errorText && <p className="notice err" style={{ maxWidth: 420 }}>登入失敗：{errorText}，請再試一次。</p>}
       <LoginForm phoneEnabled={process.env.NEXT_PUBLIC_AUTH_PHONE === "1"} />
     </>
   );
