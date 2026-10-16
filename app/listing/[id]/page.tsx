@@ -9,6 +9,7 @@ import { computeTrust } from "@/lib/trust";
 import { PriceBand, Thumb, TrustBadge } from "@/components/ui";
 import { OfferForm } from "./OfferForm";
 import { SafetyActions } from "@/components/SafetyActions";
+import { PAYMENT_HINTS, PAYMENT_LABELS, isPrepay, listingAvailable } from "@/lib/payment";
 
 export default async function ListingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -23,6 +24,8 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
   const fit = tasteFit(me.tasteVec, listing.embedding);
   const trust = computeTrust(seller);
   const offers = mine ? await repo().listOffers({ listingId: listing.id }) : [];
+  const available = listingAvailable(listing);
+  const hasCod = listing.paymentMethods.includes("cod");
 
   return (
     <>
@@ -38,12 +41,30 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
             {!mine && <span className="badge trust-hi">品味契合 {fit}%</span>}
           </div>
           <h1 style={{ margin: 0 }}>{listing.title}</h1>
-          <div className="price" style={{ fontSize: 28 }}>{formatNTD(listing.price)}</div>
+          <div className="row" style={{ alignItems: "baseline" }}>
+            <div className="price" style={{ fontSize: 28 }}>{formatNTD(listing.price)}</div>
+            {listing.quantity > 1 && <span className="muted">單價・剩 {available} 件／共 {listing.quantity} 件</span>}
+          </div>
           <PriceBand listing={listing} />
           <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{listing.description}</p>
           <p className="muted" style={{ margin: 0 }}>
             面交區域：{AREAS[listing.areaId]?.label}（{distanceBand(distanceKm(me.areaId, listing.areaId))}）・ {listing.views} 人看過
           </p>
+
+          <div className="panel stack" style={{ boxShadow: "none", gap: 8 }}>
+            <strong>付款方式</strong>
+            <ul className="stack" style={{ margin: 0, paddingLeft: 18, gap: 4 }}>
+              {listing.paymentMethods.map((m) => (
+                <li key={m}>
+                  {PAYMENT_LABELS[m]}
+                  {m === "cod" && <>（運費 {listing.shippingFee > 0 ? formatNTD(listing.shippingFee) : "含運"}）</>}
+                  <span className="muted">・{PAYMENT_HINTS[m]}</span>
+                  {isPrepay(m) && <span className="muted" style={{ color: "var(--warn)" }}>・先付款，請確認賣家身分</span>}
+                </li>
+              ))}
+            </ul>
+            <div className="muted">平台不經手金流，付款由買賣雙方自行約定。{hasCod && "貨到付款於取貨時付款。"}</div>
+          </div>
 
           <div className="panel" style={{ boxShadow: "none" }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
@@ -65,14 +86,23 @@ export default async function ListingPage({ params }: { params: Promise<{ id: st
           {mine ? (
             <div className="panel" style={{ boxShadow: "none" }}>
               <strong>這是你的物品</strong>
-              <div className="muted">收到 {offers.length} 筆出價，到「出價與聊天」處理。</div>
+              <div className="muted">
+                收到 {offers.length} 筆出價，到「出價與聊天」處理。
+                {listing.quantity > 1 && `（已保留 ${listing.reservedQty} 件・已成交 ${listing.soldQty} 件）`}
+              </div>
             </div>
           ) : blocked ? (
             <div className="notice err">你與這位賣家之間有封鎖，無法出價。</div>
-          ) : listing.status !== "active" ? (
-            <div className="notice warn">這件物品已被保留或售出。</div>
+          ) : available <= 0 ? (
+            <div className="notice warn">{listing.status === "sold" ? "這件物品已售出。" : "這件物品目前全數被保留，若有訂單取消會再開放。"}</div>
           ) : (
-            <OfferForm listingId={listing.id} price={listing.price} />
+            <OfferForm
+              listingId={listing.id}
+              price={listing.price}
+              available={available}
+              paymentMethods={listing.paymentMethods}
+              shippingFee={listing.shippingFee}
+            />
           )}
         </div>
       </div>

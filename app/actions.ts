@@ -12,7 +12,15 @@ import { analyzeItemSmart, suggestRepliesSmart } from "@/lib/ai/smart";
 import * as svc from "@/lib/services";
 import { removePhotoByUrl, savePhoto, stripPhotoMetadata } from "@/lib/storage";
 import { RATE_LIMIT_ERROR, checkLimit } from "@/lib/ratelimit";
-import type { Category, Condition } from "@/lib/types";
+import type { Category, Condition, PaymentMethod, ShippingMethod } from "@/lib/types";
+
+/** 表單值的基本型別轉換：空字串／非數字 → undefined（驗證交給 services） */
+const toInt = (v: unknown): number | undefined => {
+  if (v === undefined || v === null || v === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+};
+const toStr = (v: unknown) => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
 
 export async function switchUser(id: string) {
   if (repo().mode !== "demo") return; // Supabase 模式用真正的登入，絕不允許切換身分
@@ -62,9 +70,18 @@ export async function createListingAction(input: {
   price: number;
   originalPrice?: number;
   photo?: string;
+  quantity?: number;
+  paymentMethods?: PaymentMethod[];
+  shippingFee?: number;
 }): Promise<{ error?: string; notice?: string; id?: string }> {
   const me = await currentUser();
-  const invalid = svc.validateListingInput(input);
+  input = {
+    ...input,
+    quantity: toInt(input.quantity),
+    paymentMethods: Array.isArray(input.paymentMethods) ? input.paymentMethods.map(toStr) as PaymentMethod[] : undefined,
+    shippingFee: toInt(input.shippingFee),
+  };
+  const invalid = svc.validateListingInput(input, me); // 上傳照片前先驗證（含先付款類的賣家資格），避免孤兒照片
   if (invalid) return { error: invalid };
   if (input.photo !== undefined && typeof input.photo !== "string") return { error: "照片格式不支援" };
   if (input.photo && input.photo.length > 3_000_000) return { error: "照片太大，請壓縮後再上傳" };
@@ -86,11 +103,20 @@ export async function createListingAction(input: {
 }
 
 /* 出價 */
-export async function offerAction(listingId: string, amount: number, message: string, aiDrafted: boolean) {
+export async function offerAction(
+  listingId: string,
+  amount: number,
+  message: string,
+  aiDrafted: boolean,
+  opts: { quantity?: number; paymentMethod?: PaymentMethod } = {},
+) {
   const me = await currentUser();
-  const res = await svc.createOffer(me, listingId, amount, message, aiDrafted);
+  const res = await svc.createOffer(me, toStr(listingId), Number(amount), toStr(message), aiDrafted === true, {
+    quantity: toInt(opts?.quantity),
+    paymentMethod: opts?.paymentMethod ? (toStr(opts.paymentMethod) as PaymentMethod) : undefined,
+  });
   revalidatePath("/inbox");
-  return res.ok ? { ok: true as const, notice: res.notice } : { ok: false as const, error: res.error };
+  return res.ok ? { ok: true as const, notice: res.notice, total: res.data?.total } : { ok: false as const, error: res.error };
 }
 
 export async function buyerSuggestAction(listingId: string): Promise<{ ok: true; data: Suggestion[] } | { ok: false; error: string }> {
@@ -112,6 +138,7 @@ export async function respondOfferAction(formData: FormData) {
   revalidatePath("/inbox");
   revalidatePath("/");
   if (res.ok && res.data?.conversationId) redirect(`/chat/${res.data.conversationId}`);
+  if (!res.ok) redirect(`/inbox?error=${encodeURIComponent(res.error)}`); // 例如「剩餘數量不足」
 }
 
 /* 聊天 */
@@ -146,6 +173,37 @@ export async function chatSuggestAction(conversationId: string): Promise<{ ok: t
 export async function completeDealAction(conversationId: string) {
   const me = await currentUser();
   const res = await svc.completeDeal(me, conversationId);
+  revalidatePath(`/chat/${conversationId}`);
+  return res.ok ? { ok: true as const } : { ok: false as const, error: res.error };
+}
+
+/* 訂單：取消、貨到付款（收件資訊、標記寄出）。身分一律取自 session */
+export async function cancelOrderAction(conversationId: string) {
+  const me = await currentUser();
+  const res = await svc.cancelOrder(me, toStr(conversationId));
+  revalidatePath(`/chat/${conversationId}`);
+  revalidatePath("/inbox");
+  return res.ok ? { ok: true as const } : { ok: false as const, error: res.error };
+}
+
+export async function setShippingInfoAction(
+  conversationId: string,
+  info: { method: ShippingMethod; recipientName: string; phone: string; storeOrAddress: string },
+) {
+  const me = await currentUser();
+  const res = await svc.setShippingInfo(me, toStr(conversationId), {
+    method: toStr(info?.method) as ShippingMethod,
+    recipientName: toStr(info?.recipientName),
+    phone: toStr(info?.phone),
+    storeOrAddress: toStr(info?.storeOrAddress),
+  });
+  revalidatePath(`/chat/${conversationId}`);
+  return res.ok ? { ok: true as const } : { ok: false as const, error: res.error };
+}
+
+export async function markShippedAction(conversationId: string, trackingNo?: string) {
+  const me = await currentUser();
+  const res = await svc.markShipped(me, toStr(conversationId), toStr(trackingNo) || undefined);
   revalidatePath(`/chat/${conversationId}`);
   return res.ok ? { ok: true as const } : { ok: false as const, error: res.error };
 }
