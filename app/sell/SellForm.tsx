@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { analyzeAction, createListingAction } from "@/app/actions";
 import { CATEGORIES, CONDITIONS, formatNTD } from "@/lib/catalog";
 import type { ItemAnalysis } from "@/lib/ai/vision";
-import type { Category, Condition } from "@/lib/types";
+import { PAYMENT_HINTS, PAYMENT_LABELS, PAYMENT_METHODS, QTY_LIMITS, SHIPPING_FEE_MAX, isPrepay } from "@/lib/payment";
+import type { Category, Condition, PaymentMethod } from "@/lib/types";
 
 /** 在瀏覽器端把照片縮到 900px 寬、轉成 JPEG，避免上傳過大 */
 async function shrink(file: File): Promise<string> {
@@ -28,7 +29,7 @@ async function shrink(file: File): Promise<string> {
   }
 }
 
-export function SellForm({ museEnabled }: { museEnabled: boolean }) {
+export function SellForm({ museEnabled, canPrepay }: { museEnabled: boolean; canPrepay: boolean }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [photo, setPhoto] = useState<string>();
@@ -36,6 +37,9 @@ export function SellForm({ museEnabled }: { museEnabled: boolean }) {
   const [hint, setHint] = useState("");
   const [ai, setAi] = useState<ItemAnalysis>();
   const [form, setForm] = useState({ title: "", description: "", category: "other" as Category, condition: "good" as Condition, price: "", original: "" });
+  const [qty, setQty] = useState("1");
+  const [methods, setMethods] = useState<PaymentMethod[]>(["meetup_cash"]);
+  const [shippingFee, setShippingFee] = useState("0");
   const [msg, setMsg] = useState<{ kind: "ok" | "warn" | "err"; text: string }>();
   const [analyzing, startAnalyze] = useTransition();
   const [saving, startSave] = useTransition();
@@ -59,11 +63,23 @@ export function SellForm({ museEnabled }: { museEnabled: boolean }) {
   const submit = () =>
     startSave(async () => {
       const { original, ...rest } = form;
-      const res = await createListingAction({ ...rest, price: Number(form.price), originalPrice: original ? Number(original) : undefined, photo });
+      const hasCod = methods.includes("cod");
+      const res = await createListingAction({
+        ...rest,
+        price: Number(form.price),
+        originalPrice: original ? Number(original) : undefined,
+        photo,
+        quantity: qty.trim() === "" ? 1 : Number(qty),
+        paymentMethods: PAYMENT_METHODS.filter((m) => methods.includes(m)), // 依固定順序送出
+        shippingFee: hasCod ? (shippingFee.trim() === "" ? 0 : Number(shippingFee)) : undefined,
+      });
       if (res.error) return setMsg({ kind: "err", text: res.error });
       if (res.notice) setMsg({ kind: "warn", text: res.notice });
       router.push(`/listing/${res.id}`);
     });
+
+  const toggleMethod = (m: PaymentMethod) =>
+    setMethods((cur) => (cur.includes(m) ? cur.filter((x) => x !== m) : [...cur, m]));
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm({ ...form, [k]: e.target.value });
@@ -133,12 +149,39 @@ export function SellForm({ museEnabled }: { museEnabled: boolean }) {
           </div>
         </div>
         <div className="field">
+          <label htmlFor="qty">數量（同款共幾件）</label>
+          <input id="qty" className="input price" type="number" inputMode="numeric" min={QTY_LIMITS.min} max={QTY_LIMITS.max} step={1} value={qty} onChange={(e) => setQty(e.target.value)} />
+        </div>
+        <fieldset className="field opts">
+          <legend>接受的付款方式（可複選）</legend>
+          {PAYMENT_METHODS.map((m) => {
+            const locked = isPrepay(m) && !canPrepay;
+            return (
+              <label key={m} className={`opt ${methods.includes(m) ? "on" : ""} ${locked ? "locked" : ""}`}>
+                <input type="checkbox" checked={methods.includes(m)} disabled={locked} onChange={() => toggleMethod(m)} />
+                <span>
+                  <strong>{PAYMENT_LABELS[m]}</strong>
+                  <span className="muted">{locked ? "完成手機驗證後才能開啟（先付款是詐騙最常見的手法）" : PAYMENT_HINTS[m]}</span>
+                </span>
+              </label>
+            );
+          })}
+          {methods.length === 0 && <span className="muted" style={{ color: "var(--danger)" }}>請至少選擇一種付款方式</span>}
+        </fieldset>
+        {methods.includes("cod") && (
+          <div className="field">
+            <label htmlFor="ship">貨到付款運費（NT$，0 表示含運）</label>
+            <input id="ship" className="input price" type="number" inputMode="numeric" min={0} max={SHIPPING_FEE_MAX} step={1} value={shippingFee} onChange={(e) => setShippingFee(e.target.value)} />
+          </div>
+        )}
+        <p className="muted" style={{ margin: 0 }}>平台不經手金流：付款方式只是你和買家約定的方式，平台不收款、不代收。</p>
+        <div className="field">
           <label htmlFor="desc">說明</label>
           <textarea id="desc" className="textarea" value={form.description} onChange={set("description")} />
         </div>
         <p className="muted" style={{ margin: 0 }}>電話、LINE ID、外部連結會被自動遮蔽；銀行帳號與詐騙話術會被擋下。面交地點只顯示到捷運站。</p>
         {msg && <div className={`notice ${msg.kind}`}>{msg.text}</div>}
-        <button className="btn" onClick={submit} disabled={saving || !form.title || !form.price}>
+        <button className="btn" onClick={submit} disabled={saving || !form.title || !form.price || methods.length === 0}>
           {saving ? "上架中…" : "確認上架"}
         </button>
       </div>

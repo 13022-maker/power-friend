@@ -8,7 +8,7 @@ AI 世代的二手交易平台（交易為主、社交為輔）。Next.js 16 + S
 ```bash
 npm install
 npm run dev          # http://localhost:3000
-npm test             # 55 個單元測試：防詐、估價、品味向量、交易流程、原子操作、Muse（模擬 API）、帳號刪除、輸入驗證
+npm test             # 78 個單元測試：防詐、估價、品味向量、交易流程、原子操作、Muse（模擬 API）、帳號刪除、輸入驗證、多件數量／付款方式／貨到付款
 npm run build && npm run start:demo   # 以 production 模式跑 demo（必須明確 APP_MODE=demo）
 ```
 
@@ -24,6 +24,16 @@ npm run build && npm run start:demo   # 以 production 模式跑 demo（必須�
 5. **成交**：「小安」按「面交完成，標記成交」→ 雙方成交數＋1，買家品味向量更新。
 6. **我的**：信任分數組成、個資匯出 JSON。
 
+**多件＋貨到付款（約 2 分鐘）**：seed 的「一番賞 A 賞 公仔 未拆」（`l_figure`，阿哲賣，共 3 件，面交／貨到付款／行動支付，運費 NT$60）。
+
+1. 以「小安」打開該物品：看到「剩 3 件／共 3 件」與三種付款方式。件數填 2、付款方式選「貨到付款」→ 總額即時顯示「單價 × 2 ＋ 運費 60」→ 送出。（改選「行動支付轉帳」會出現先付款防詐提醒。）
+2. 切換成「阿哲」→「出價與聊天」→ 接受。物品變成「剩 1 件」，其他人仍可對剩下的 1 件出價。
+3. 聊天室上方的「訂單」面板：切回「小安」→ 填收件資訊（超商取貨或宅配、姓名、手機、門市或地址），寄出前都能修改。
+4. 「阿哲」看到收件資訊 → 填物流單號（選填）→「標記已寄出」→ 再「買家已取貨付款，標記成交」（未寄出不能成交）。成交後收件資訊自動刪除。
+5. 任一方在成交前都可「取消訂單」（需確認），保留的件數會釋出；已寄出後只有賣家能取消。
+
+多捲合購可改用小安賣的「過期底片 Kodak ColorPlus 單捲」（`l_film`，共 5 件、貨到付款含運；以「阿哲」或「Mia」出價）。
+
 ## 功能對照
 
 | 功能 | 位置 | 借鏡 |
@@ -38,6 +48,9 @@ npm run build && npm run start:demo   # 以 production 模式跑 demo（必須�
 | 封鎖雙向生效、封鎖／檢舉分開 | `toggleBlock`、`supabase/schema.sql` RLS | Alovoa block/report |
 | 個資匯出 | `/api/me/export` | Alovoa GDPR |
 | 給 AI agent 的工具端點（JSON-RPC，對齊 MCP） | `/api/mcp` | — |
+| 多件數量（以件數保留、並行接受不超賣） | `lib/payment.ts#listingAvailable`、`acceptOffer`（Repo，原子） | — |
+| 多種付款方式（先付款類需手機驗證、出價時防詐提醒；平台不經手金流） | `lib/payment.ts`、`createListing` / `createOffer` | — |
+| 貨到付款（收件資訊加密、只限雙方、寄出→成交、取消釋出數量） | `setShippingInfo` / `markShipped` / `cancelOrder`、`app/chat/[id]/OrderPanel.tsx` | — |
 
 ### Agent 端點範例
 
@@ -46,7 +59,7 @@ curl -s localhost:3000/api/mcp -H 'content-type: application/json' -H 'x-agent-f
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_listings","arguments":{"query":"露營","max_price":10000}}}'
 ```
 
-工具：`search_listings`、`get_listing`、`make_offer`（agent 出價一律標記 AI 代擬）。
+工具：`search_listings`、`get_listing`（含 `available`、`payment_methods`、`shipping_fee`）、`make_offer`（`quantity` 預設 1、`payment_method` 預設物品第一種；agent 出價一律標記 AI 代擬）。
 
 ## 接上 Meta Muse Spark（AI 能力）
 
@@ -77,15 +90,21 @@ MUSE_MODEL=muse-spark-1.1       # 有新版可改，例如官方公布的 1.3 ID
 4. `supabase/migrations/002_storage_realtime.sql`：照片 bucket `listing-photos`、messages 加入 Realtime
 5. `supabase/migrations/003_server_only_writes.sql`：交易資料改為伺服器寫入，前端只讀
 6. `supabase/migrations/004_hardening.sql`：原子操作函式、profiles 前端唯讀且不含 `taste_vec`、Storage 只允許伺服器寫入、檢舉在被檢舉者刪帳號後保留（`target_ref` 雜湊）
+7. `supabase/migrations/005_quantity_payment.sql`：多件數量（`quantity`／`reserved_qty`／`sold_qty`，`status` 由 trigger 依數量推導）、付款方式與運費、貨到付款收件資訊 `offer_shipping`（`pgp_sym_encrypt` 加密、前端不可讀寫），取代 `accept_offer`／`complete_deal` 並新增 `decline_offer`、`cancel_order`、`set_shipping_info`、`get_shipping_info`、`mark_shipped`（僅 service role）。執行後再跑一次 `seed.sql` 可套用示範物品的數量與付款設定
 
-再到 Vault 建立加密金鑰：`select vault.create_secret('<隨機長字串>', 'pii_key');`
+再到 Vault 建立加密金鑰：`select vault.create_secret('<隨機長字串>', 'pii_key');`（`profiles_private` 與 005 的收件資訊共用）
 
 **環境變數**：複製 `.env.example` 為 `.env.local`，設 `APP_MODE=supabase`、`NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`（登入與 Realtime 用）、`SUPABASE_SERVICE_ROLE_KEY`（伺服器寫入用，必填）。正式環境未設 `APP_MODE` 又缺 Supabase 變數時會直接報錯，不會默默退回可切換身分的 demo 模式。
 
 ### 安全模型
 
 - **寫入只走伺服器**：上架、出價、聊天、成交、檢舉、個人資料都經 server action，用 service role 寫入；前端（anon key＋使用者 JWT）只能讀，且 RLS 只給對話雙方讀訊息。前端無法把訊息 `risk` 改成 `none` 繞過防詐，也無法竄改成交數或信任分數。
-- **原子操作**：接受出價（`accept_offer`）、標記成交（`complete_deal`）、瀏覽數（`increment_views`）、有效檢舉（`add_valid_report`）都是資料庫函式，鎖列後一次完成。同一件物品不會被接受兩次；同一對買賣家重複成交只計一次，防止分身刷分。
+- **原子操作**：接受出價（`accept_offer`）、標記成交（`complete_deal`）、取消訂單（`cancel_order`）、貨到付款寄出（`mark_shipped`）、瀏覽數（`increment_views`）、有效檢舉（`add_valid_report`）都是資料庫函式，鎖列後一次完成。多件物品以條件式 update 搶可售數量，並行接受不會超賣（另有 check constraint 兜底）；同一對買賣家重複成交只計一次，防止分身刷分。
+- **付款方式**：平台不經手金流，只記錄買賣雙方約定的方式（面交、貨到付款、匯款、行動支付）。先付款類（匯款、行動支付）只限完成手機驗證的賣家開啟，買家選用時固定提醒詐騙風險。
+- **貨到付款收件資訊**：只有該筆訂單的買家可寫、買賣雙方可讀，整包加密存放；成交、取消或刪除帳號即清除。MCP agent 讀寫不到。
+  注意：`set_shipping_info` 以**明文參數**傳進資料庫再於函式內加密（`get_shipping_info` 回傳值也是明文）。正式環境請勿對這些函式開啟 statement log（`log_statement = 'all'`、`log_min_duration_statement` 記錄參數）或 pgaudit 的參數紀錄，否則收件個資會以明文留在資料庫日誌。
+- **運費快照**：出價時把當下的運費存在 offer 上（`offers.shipping_fee`），總額一律以出價上的值計算，賣家之後改運費不影響既有訂單。付款方式與運費不經通用的 `updateListing` 修改；日後開放編輯須另寫 service 重新驗證（先付款類需賣家驗證）。
+- **網址上的錯誤訊息**：`?error=` 只帶固定代碼，頁面以白名單對照中文，查無不顯示，避免被拿來在平台網域上顯示任意文字。
 - **登入後的跳轉**：`/auth/callback` 只允許站內白名單路徑（`lib/safe-redirect.ts`）。
 - **聯絡方式遮蔽**：先去除零寬字元、全形轉半形，再比對與遮蔽同一個字串；含 Email 規則。
 - **照片**：伺服器端以 sharp 重新編碼，移除 EXIF／GPS，送 Muse 前也一樣；驗證格式、大小與檔頭。
@@ -96,7 +115,7 @@ MUSE_MODEL=muse-spark-1.1       # 有新版可改，例如官方公布的 1.3 ID
 
 - **照片 Storage**：`lib/storage.ts#savePhoto` 重新編碼後以 service role 上傳，`listings.photo_url` 存 public URL；上架失敗會刪除剛上傳的照片。demo 模式存 data URL。
 - **Realtime**：`ChatRoom.tsx` 用帶登入 session 的瀏覽器 client 訂閱 `messages` INSERT，2.5 秒輪詢保留為後備。
-- **刪除帳號**：「我的」頁底部，輸入顯示名稱確認。先把因本人出價而保留中的他人物品改回上架，再刪 Supabase Auth 使用者（失敗會回報，不會假裝成功）、profile、照片資料夾。別人對本人的檢舉會保留，作為防詐證據。
+- **刪除帳號**：「我的」頁底部，輸入顯示名稱確認。先取消本人作為買家的已接受訂單、釋出保留數量（收件資訊一併刪除），再刪 Supabase Auth 使用者（失敗會回報，不會假裝成功）、profile、照片資料夾。別人對本人的檢舉會保留，作為防詐證據。取消訂單時寫給賣家的系統訊息（「買方已刪除帳號…」）會隨對話一併被 cascade 刪除，賣家端看到的是對話消失、保留數量已釋出。
 
 ## 登入（Supabase Auth）
 
@@ -129,6 +148,7 @@ lib/ai/             vision・pricing・embedding・scam・negotiate・muse・sma
 lib/supabase/       Supabase Auth（server／browser client）
 lib/data/           Repo 介面＋demo（記憶體）／supabase 兩種實作、seed
 lib/services.ts     商業邏輯（只依賴 Repo 介面）
-supabase/           schema.sql、seed.sql、migrations/001–004
+lib/payment.ts      付款方式標籤、數量推導（listingAvailable／deriveStatus）、總額、收件資訊驗證
+supabase/           schema.sql、seed.sql、migrations/001–005
 tests/              vitest
 ```

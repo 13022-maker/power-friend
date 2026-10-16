@@ -30,7 +30,7 @@ const GUEST: Profile = {
 export default async function ExplorePage({
   searchParams,
 }: {
-  searchParams: Promise<{ mode?: string; cat?: string; q?: string }>;
+  searchParams: Promise<{ mode?: string; cat?: string; q?: string; deleted?: string }>;
 }) {
   const sp = await searchParams;
   const mode = (MODES.find((m) => m.id === sp.mode)?.id ?? "likely") as SortMode;
@@ -47,8 +47,15 @@ export default async function ExplorePage({
     return `/?${s.toString()}`;
   };
 
+  const released = sp.deleted !== undefined && /^\d{1,4}$/.test(sp.deleted) ? Number(sp.deleted) : undefined;
+
   return (
     <>
+      {released !== undefined && (
+        <div className="notice ok" style={{ marginTop: 16 }}>
+          帳號已刪除。{released > 0 ? `你尚未成交的 ${released} 筆訂單已取消，保留的數量已釋出給賣家。` : ""}
+        </div>
+      )}
       {me ? (
         <>
           <h1>嗨 {me.displayName}，今天想找什麼？</h1>

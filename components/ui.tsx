@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { CATEGORIES, CONDITIONS, distanceBand, formatNTD } from "@/lib/catalog";
 import { computeTrust } from "@/lib/trust";
+import { listingAvailable } from "@/lib/payment";
 import type { Category, Listing, Profile, RankedListing } from "@/lib/types";
 
-export function Thumb({ category, photo, fit, status }: { category: Category; photo?: string; fit?: number; status?: string }) {
+export function Thumb({ category, photo, fit, status, qty }: { category: Category; photo?: string; fit?: number; status?: string; qty?: string }) {
   const c = CATEGORIES[category];
   return (
     <div
@@ -21,8 +22,15 @@ export function Thumb({ category, photo, fit, status }: { category: Category; ph
       {photo ? <img src={photo} alt="" /> : <span className="glyph">{c.glyph}</span>}
       {fit !== undefined && <span className="fit">契合 {fit}%</span>}
       {status && status !== "active" && <span className="status">{status === "reserved" ? "已保留" : "已售出"}</span>}
+      {qty && <span className="qty-pill">{qty}</span>}
     </div>
   );
+}
+
+/** 多件物品的件數標籤（單件回傳 undefined）：「剩 2／3 件」 */
+export function qtyLabel(l: Pick<Listing, "quantity" | "reservedQty" | "soldQty">): string | undefined {
+  if (l.quantity <= 1) return undefined;
+  return `剩 ${listingAvailable(l)}／${l.quantity} 件`;
 }
 
 export function TrustBadge({ profile }: { profile: Profile }) {
@@ -39,7 +47,7 @@ export function TrustBadge({ profile }: { profile: Profile }) {
 export function ListingCard({ l, showFit = true }: { l: RankedListing; showFit?: boolean }) {
   return (
     <Link href={`/listing/${l.id}`} className="card">
-      <Thumb category={l.category} photo={l.photo} fit={showFit ? l.tasteFit : undefined} status={l.status} />
+      <Thumb category={l.category} photo={l.photo} fit={showFit ? l.tasteFit : undefined} status={l.status} qty={qtyLabel(l)} />
       <div className="card-body">
         <div className="card-title">{l.title}</div>
         <div className="row" style={{ justifyContent: "space-between" }}>

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Block, Conversation, Listing, Message, Offer, Profile, Report } from "../types";
+import type { Block, Conversation, Listing, Message, Offer, PaymentMethod, Profile, Report, ShippingInfo } from "../types";
 import type { Repo } from "./repo";
 
 /**
@@ -58,10 +58,30 @@ const listingFrom = (r: Row): Listing => ({
   createdAt: r.created_at as string,
   views: (r.views as number) ?? 0,
   embedding: fromVec(r.embedding),
+  quantity: (r.quantity as number) ?? 1,
+  reservedQty: (r.reserved_qty as number) ?? 0,
+  soldQty: (r.sold_qty as number) ?? 0,
+  paymentMethods: (r.payment_methods as PaymentMethod[] | null) ?? ["meetup_cash"],
+  shippingFee: (r.shipping_fee as number) ?? 0,
 });
+/** insert 用（含數量、付款方式；status 由 005 的 trigger 依數量推導）。付款方式已由 services.createListing 驗證 */
 const listingTo = (l: Listing): Row => ({
+  ...listingEditable(l),
   id: l.id,
   seller_id: l.sellerId,
+  status: l.status,
+  payment_methods: l.paymentMethods,
+  shipping_fee: l.shippingFee,
+  quantity: l.quantity,
+  reserved_qty: l.reservedQty,
+  sold_qty: l.soldQty,
+});
+/**
+ * update 用：只含可編輯欄位。數量計數與狀態只能經原子 RPC 改變（避免 read-modify-write 蓋掉並行的保留）；
+ * payment_methods／shipping_fee 也刻意不在這裡：日後開放編輯付款方式時，須另寫 service 重新跑
+ * validatePaymentMethods（先付款類需賣家 verificationLevel ≥ 1）與運費驗證，不可走通用 updateListing。
+ */
+const listingEditable = (l: Listing): Row => ({
   title: l.title,
   description: l.description,
   category: l.category,
@@ -71,7 +91,6 @@ const listingTo = (l: Listing): Row => ({
   ai_price_high: l.aiPriceHigh,
   area_id: l.areaId,
   photo_url: l.photo ?? null,
-  status: l.status,
   created_at: l.createdAt,
   views: l.views,
   embedding: toVec(l.embedding),
@@ -88,6 +107,11 @@ const offerFrom = (r: Row): Offer => ({
   aiDrafted: !!r.ai_drafted,
   status: r.status as Offer["status"],
   createdAt: r.created_at as string,
+  quantity: (r.quantity as number) ?? 1,
+  paymentMethod: ((r.payment_method as PaymentMethod | null) ?? "meetup_cash"),
+  shippedAt: (r.shipped_at as string | null) ?? undefined,
+  trackingNo: (r.tracking_no as string | null) ?? undefined,
+  shippingFee: (r.shipping_fee as number) ?? 0,
 });
 const offerTo = (o: Offer): Row => ({
   id: o.id,
@@ -100,6 +124,11 @@ const offerTo = (o: Offer): Row => ({
   ai_drafted: o.aiDrafted,
   status: o.status,
   created_at: o.createdAt,
+  quantity: o.quantity,
+  payment_method: o.paymentMethod,
+  shipped_at: o.shippedAt ?? null,
+  tracking_no: o.trackingNo ?? null,
+  shipping_fee: o.shippingFee,
 });
 
 const convFrom = (r: Row): Conversation => ({
@@ -193,7 +222,7 @@ export const supabaseRepo: Repo = {
     await must(db().from("listings").insert(listingTo(l)));
   },
   async updateListing(l) {
-    await must(db().from("listings").update(listingTo(l)).eq("id", l.id));
+    await must(db().from("listings").update(listingEditable(l)).eq("id", l.id));
   },
   async incrementViews(listingId) {
     await must(db().rpc("increment_views", { p_listing: listingId }));
@@ -215,6 +244,9 @@ export const supabaseRepo: Repo = {
   },
   async updateOffer(o) {
     await must(db().from("offers").update(offerTo(o)).eq("id", o.id));
+  },
+  async declineOffer(offerId, sellerId) {
+    return (await must(db().rpc("decline_offer", { p_offer: offerId, p_seller: sellerId }))) === true;
   },
 
   async listConversations(userId) {
@@ -316,6 +348,53 @@ export const supabaseRepo: Repo = {
         p_conv: conversationId,
         p_seller: sellerId,
         p_buyer_taste: toVec(buyerTaste),
+        p_msg: msgTo(systemMessage),
+      }),
+    );
+    return ok === true;
+  },
+
+  async cancelOrder(conversationId, actorId, systemMessage, opts) {
+    const ok = await must(
+      db().rpc("cancel_order", {
+        p_conv: conversationId,
+        p_actor: actorId,
+        p_msg: msgTo(systemMessage),
+        p_allow_shipped: !!opts?.allowShipped,
+      }),
+    );
+    return ok === true;
+  },
+
+  async setShippingInfo(conversationId, buyerId, info) {
+    const ok = await must(
+      db().rpc("set_shipping_info", {
+        p_conv: conversationId,
+        p_buyer: buyerId,
+        p_info: { method: info.method, recipientName: info.recipientName, phone: info.phone, storeOrAddress: info.storeOrAddress },
+      }),
+    );
+    return ok === true;
+  },
+
+  async getShippingInfo(conversationId, userId) {
+    const r = (await must(db().rpc("get_shipping_info", { p_conv: conversationId, p_user: userId }))) as Row | null;
+    if (!r || typeof r !== "object") return null;
+    return {
+      offerId: r.offerId as string,
+      method: r.method as ShippingInfo["method"],
+      recipientName: r.recipientName as string,
+      phone: r.phone as string,
+      storeOrAddress: r.storeOrAddress as string,
+    };
+  },
+
+  async markShipped(conversationId, sellerId, trackingNo, systemMessage) {
+    const ok = await must(
+      db().rpc("mark_shipped", {
+        p_conv: conversationId,
+        p_seller: sellerId,
+        p_tracking: trackingNo ?? null,
         p_msg: msgTo(systemMessage),
       }),
     );

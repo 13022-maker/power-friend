@@ -11,14 +11,18 @@ import { safeNextPath } from "@/lib/safe-redirect";
  */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = request.nextUrl;
-  const fail = (msg: string) => NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(msg)}`, origin));
+  // 只帶固定代碼，不把外部（OAuth 提供者／網址參數）的錯誤字串放進網址再顯示（防借平台網域顯示釣魚文字）
+  const fail = (code: "oauth" | "exchange" | "missing", detail?: string) => {
+    if (detail) console.warn(`auth callback failed (${code}): ${detail.slice(0, 200)}`);
+    return NextResponse.redirect(new URL(`/login?error=${code}`, origin));
+  };
   if (repo().mode === "demo") return NextResponse.redirect(new URL("/", origin));
 
   // 白名單站內路徑（防 open redirect：`/\evil.com`、`/\t/evil.com` 等）
   const next = safeNextPath(searchParams.get("next"), origin);
 
   const oauthError = searchParams.get("error_description") ?? searchParams.get("error");
-  if (oauthError) return fail(oauthError);
+  if (oauthError) return fail("oauth", oauthError);
 
   const { createSupabaseServerClient } = await import("@/lib/supabase/server");
   const sb = await createSupabaseServerClient();
@@ -29,12 +33,12 @@ export async function GET(request: NextRequest) {
 
   if (code) {
     const { error } = await sb.auth.exchangeCodeForSession(code);
-    if (error) return fail(error.message);
+    if (error) return fail("exchange", error.message);
   } else if (tokenHash && type) {
     const { error } = await sb.auth.verifyOtp({ token_hash: tokenHash, type });
-    if (error) return fail(error.message);
+    if (error) return fail("exchange", error.message);
   } else {
-    return fail("缺少驗證參數");
+    return fail("missing");
   }
   return NextResponse.redirect(new URL(next, origin));
 }

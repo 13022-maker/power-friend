@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { repo } from "@/lib/data";
 import { createOffer, explore } from "@/lib/services";
 import { CATEGORIES, formatNTD } from "@/lib/catalog";
-import type { Category } from "@/lib/types";
+import { PAYMENT_LABELS, PAYMENT_METHODS, isPaymentMethod, listingAvailable } from "@/lib/payment";
+import type { Category, Listing } from "@/lib/types";
 
 /**
  * 給外部 AI agent 的工具端點（JSON-RPC 2.0，對齊 MCP 的 initialize / tools/list / tools/call）。
@@ -31,10 +32,17 @@ const TOOLS = [
   },
   {
     name: "make_offer",
-    description: "代表使用者出價。訊息會標記為 AI 代擬，賣家可見。",
+    description:
+      "代表使用者出價。amount 為單價；總額 = 單價 × 數量 ＋（貨到付款時）運費。訊息會標記為 AI 代擬，賣家可見。平台不經手金流；agent 無法讀寫收件資訊。",
     inputSchema: {
       type: "object",
-      properties: { listing_id: { type: "string" }, amount: { type: "number" }, message: { type: "string" } },
+      properties: {
+        listing_id: { type: "string" },
+        amount: { type: "number", description: "單價（整數）" },
+        message: { type: "string" },
+        quantity: { type: "number", default: 1, description: "1..可售數量（available）" },
+        payment_method: { type: "string", enum: [...PAYMENT_METHODS], description: "須在物品的 payment_methods 內；預設物品的第一種" },
+      },
       required: ["listing_id", "amount", "message"],
     },
   },
@@ -57,6 +65,14 @@ async function resolveAgentUser(req: Request) {
   const uid = await userIdFromAccessToken(m[1]);
   return uid ? r.getProfile(uid) : null;
 }
+
+/** 交易相關欄位（不含任何收件資訊） */
+const tradeInfo = (l: Listing) => ({
+  available: listingAvailable(l),
+  payment_methods: l.paymentMethods,
+  payment_labels: l.paymentMethods.map((m) => PAYMENT_LABELS[m]),
+  shipping_fee: l.paymentMethods.includes("cod") ? l.shippingFee : null,
+});
 
 type RpcReq = { jsonrpc: "2.0"; id?: string | number; method: string; params?: Record<string, unknown> };
 
@@ -108,6 +124,7 @@ export async function POST(req: Request) {
           taste_fit: l.tasteFit,
           seller_trust: l.trust,
           distance_km: Math.round(l.distanceKm),
+          ...tradeInfo(l),
         })),
     );
   }
@@ -122,12 +139,21 @@ export async function POST(req: Request) {
       price: formatNTD(l.price),
       fair_range: `${formatNTD(l.aiPriceLow)}–${formatNTD(l.aiPriceHigh)}`,
       status: l.status,
+      ...tradeInfo(l),
     });
   }
 
   if (name === "make_offer") {
-    const res = await createOffer(user, String(args.listing_id), Number(args.amount), String(args.message ?? ""), true);
-    return res.ok ? text(id, { offer_id: res.data?.id, notice: res.notice ?? null }) : fail(id, -32003, res.error);
+    const quantity = args.quantity === undefined || args.quantity === null ? 1 : Number(args.quantity);
+    const pm = args.payment_method;
+    if (pm !== undefined && pm !== null && !isPaymentMethod(pm)) return fail(id, -32602, `payment_method 只能是 ${PAYMENT_METHODS.join("、")}`);
+    const res = await createOffer(user, String(args.listing_id), Number(args.amount), String(args.message ?? ""), true, {
+      quantity,
+      paymentMethod: pm ?? undefined,
+    });
+    return res.ok
+      ? text(id, { offer_id: res.data?.id, total: res.data?.total ?? null, notice: res.notice ?? null })
+      : fail(id, -32003, res.error);
   }
 
   return fail(id, -32602, `Unknown tool ${name}`);
