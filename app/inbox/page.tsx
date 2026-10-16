@@ -6,7 +6,7 @@ import { formatNTD } from "@/lib/catalog";
 import { Thumb, TrustBadge } from "@/components/ui";
 import type { Listing, Offer, Profile } from "@/lib/types";
 
-const STATUS: Record<Offer["status"], string> = { pending: "等待回覆", accepted: "已接受", declined: "已婉拒" };
+const STATUS: Record<Offer["status"], string> = { pending: "等待回覆", accepted: "已接受", declined: "已婉拒", completed: "已成交", cancelled: "已取消" };
 
 export default async function InboxPage() {
   const me = await currentUser();

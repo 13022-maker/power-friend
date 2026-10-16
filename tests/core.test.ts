@@ -175,7 +175,7 @@ describe("交易流程（demo repo）", () => {
     expect((await svc.respondOffer(zhe, o1.ok ? o1.data!.id : "", true)).ok).toBe(true);
     const second = await svc.respondOffer(zhe, o2.ok ? o2.data!.id : "", true);
     expect(second.ok).toBe(false);
-    expect(!second.ok && second.error).toBe("物品已保留或售出");
+    expect(!second.ok && second.error).toBe("剩餘數量不足");
   });
 
   it("瀏覽數原子 +1；個資匯出含已售出物品", async () => {

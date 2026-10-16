@@ -22,7 +22,7 @@ const dataUrl = (mime: string, bytes: Buffer) => `data:${mime};base64,${bytes.to
 describe("刪除帳號（demo repo）", () => {
   beforeEach(() => resetDemoStore());
 
-  it("刪除本人所有資料，並把對方因本人出價而保留的物品改回上架", async () => {
+  it("刪除本人所有資料，並釋出本人已接受訂單保留的數量（對方物品回到上架）", async () => {
     const an = (await demoRepo.getProfile("u_an"))!;
     const zhe = (await demoRepo.getProfile("u_zhe"))!;
     const mia = (await demoRepo.getProfile("u_mia"))!;
@@ -41,7 +41,7 @@ describe("刪除帳號（demo repo）", () => {
     await svc.report(an, "u_new", "疑似詐騙");
 
     const res = await svc.deleteAccount(an);
-    expect(res.ok && res.data!.reactivated).toBe(1);
+    expect(res.ok && res.data!.released).toBe(1);
 
     expect(await demoRepo.getProfile("u_an")).toBeNull();
     expect((await demoRepo.listListings()).some((l) => l.sellerId === "u_an")).toBe(false);
@@ -69,7 +69,7 @@ describe("刪除帳號（demo repo）", () => {
     const acc = await svc.respondOffer(zhe, o.ok ? o.data!.id : "", true);
     await svc.completeDeal(zhe, acc.ok ? acc.data!.conversationId! : "");
     const res = await svc.deleteAccount(an);
-    expect(res.ok && res.data!.reactivated).toBe(0);
+    expect(res.ok && res.data!.released).toBe(0);
     expect((await demoRepo.getListing("l_fm2"))!.status).toBe("sold");
   });
 });
