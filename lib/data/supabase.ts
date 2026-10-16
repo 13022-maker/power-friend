@@ -64,17 +64,23 @@ const listingFrom = (r: Row): Listing => ({
   paymentMethods: (r.payment_methods as PaymentMethod[] | null) ?? ["meetup_cash"],
   shippingFee: (r.shipping_fee as number) ?? 0,
 });
-/** insert 用（含數量；status 由 005 的 trigger 依數量推導） */
+/** insert 用（含數量、付款方式；status 由 005 的 trigger 依數量推導）。付款方式已由 services.createListing 驗證 */
 const listingTo = (l: Listing): Row => ({
   ...listingEditable(l),
   id: l.id,
   seller_id: l.sellerId,
   status: l.status,
+  payment_methods: l.paymentMethods,
+  shipping_fee: l.shippingFee,
   quantity: l.quantity,
   reserved_qty: l.reservedQty,
   sold_qty: l.soldQty,
 });
-/** update 用：只含可編輯欄位；數量計數與狀態只能經原子 RPC 改變（避免 read-modify-write 蓋掉並行的保留） */
+/**
+ * update 用：只含可編輯欄位。數量計數與狀態只能經原子 RPC 改變（避免 read-modify-write 蓋掉並行的保留）；
+ * payment_methods／shipping_fee 也刻意不在這裡：日後開放編輯付款方式時，須另寫 service 重新跑
+ * validatePaymentMethods（先付款類需賣家 verificationLevel ≥ 1）與運費驗證，不可走通用 updateListing。
+ */
 const listingEditable = (l: Listing): Row => ({
   title: l.title,
   description: l.description,
@@ -88,8 +94,6 @@ const listingEditable = (l: Listing): Row => ({
   created_at: l.createdAt,
   views: l.views,
   embedding: toVec(l.embedding),
-  payment_methods: l.paymentMethods,
-  shipping_fee: l.shippingFee,
 });
 
 const offerFrom = (r: Row): Offer => ({
@@ -107,6 +111,7 @@ const offerFrom = (r: Row): Offer => ({
   paymentMethod: ((r.payment_method as PaymentMethod | null) ?? "meetup_cash"),
   shippedAt: (r.shipped_at as string | null) ?? undefined,
   trackingNo: (r.tracking_no as string | null) ?? undefined,
+  shippingFee: (r.shipping_fee as number) ?? 0,
 });
 const offerTo = (o: Offer): Row => ({
   id: o.id,
@@ -123,6 +128,7 @@ const offerTo = (o: Offer): Row => ({
   payment_method: o.paymentMethod,
   shipped_at: o.shippedAt ?? null,
   tracking_no: o.trackingNo ?? null,
+  shipping_fee: o.shippingFee,
 });
 
 const convFrom = (r: Row): Conversation => ({

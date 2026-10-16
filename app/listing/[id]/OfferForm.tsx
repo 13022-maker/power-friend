@@ -5,7 +5,7 @@ import Link from "next/link";
 import { buyerSuggestAction, offerAction } from "@/app/actions";
 import type { Suggestion } from "@/lib/ai/negotiate";
 import { formatNTD } from "@/lib/catalog";
-import { PAYMENT_HINTS, PAYMENT_LABELS, PREPAY_WARNING, isPrepay, offerTotal } from "@/lib/payment";
+import { PAYMENT_HINTS, PAYMENT_LABELS, PREPAY_WARNING, isPrepay, quoteTotal } from "@/lib/payment";
 import type { PaymentMethod } from "@/lib/types";
 
 export function OfferForm({
@@ -55,7 +55,7 @@ export function OfferForm({
     });
 
   const unit = Number(amount);
-  const total = Number.isFinite(unit) && unit > 0 ? offerTotal({ amount: unit, quantity: qty, paymentMethod: method }, { shippingFee }) : undefined;
+  const total = Number.isFinite(unit) && unit > 0 ? quoteTotal({ amount: unit, quantity: qty, paymentMethod: method }, { shippingFee }) : undefined;
 
   if (result?.ok)
     return (

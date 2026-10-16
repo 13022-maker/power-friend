@@ -5,7 +5,7 @@ import type { Conversation, Message, Offer } from "../lib/types";
 const now = () => new Date().toISOString();
 
 function offer(id: string, listingId: string, buyerId: string, sellerId: string): Offer {
-  return { id, listingId, buyerId, sellerId, amount: 1000, message: "還在嗎？", messageHash: id, aiDrafted: false, status: "pending", createdAt: now(), quantity: 1, paymentMethod: "meetup_cash" };
+  return { id, listingId, buyerId, sellerId, amount: 1000, message: "還在嗎？", messageHash: id, aiDrafted: false, status: "pending", createdAt: now(), quantity: 1, paymentMethod: "meetup_cash", shippingFee: 0 };
 }
 function conv(id: string, o: Offer): Conversation {
   return { id, offerId: o.id, listingId: o.listingId, buyerId: o.buyerId, sellerId: o.sellerId, createdAt: now() };

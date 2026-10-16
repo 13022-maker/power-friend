@@ -61,6 +61,8 @@ alter table offers add column if not exists quantity int not null default 1;
 alter table offers add column if not exists payment_method text not null default 'meetup_cash';
 alter table offers add column if not exists shipped_at timestamptz;
 alter table offers add column if not exists tracking_no text;
+-- 運費快照：出價當下物品的運費（只有 cod 才有）；總額以此計算，之後物品改運費不影響既有出價
+alter table offers add column if not exists shipping_fee int not null default 0;
 
 alter table offers drop constraint if exists offers_status_check;
 alter table offers add constraint offers_status_check
@@ -70,6 +72,9 @@ alter table offers add constraint offers_quantity_check check (quantity between 
 alter table offers drop constraint if exists offers_payment_method_check;
 alter table offers add constraint offers_payment_method_check
   check (payment_method in ('meetup_cash','cod','bank_transfer','mobile_pay'));
+alter table offers drop constraint if exists offers_shipping_fee_check;
+alter table offers add constraint offers_shipping_fee_check
+  check (shipping_fee between 0 and 1000 and (payment_method = 'cod' or shipping_fee = 0));
 alter table offers drop constraint if exists offers_tracking_no_check;
 alter table offers add constraint offers_tracking_no_check
   check (tracking_no is null or tracking_no ~ '^[A-Za-z0-9-]{1,40}$');
@@ -78,6 +83,12 @@ alter table offers add constraint offers_tracking_no_check
 update offers o set status = 'completed'
   from conversations c join listings l on l.id = c.listing_id
   where c.offer_id = o.id and o.status = 'accepted' and l.status = 'sold';
+
+-- 運費快照回填：尚未快照（0）的 cod 出價取物品目前運費（只動 pending／accepted；已結束的訂單不追溯）
+update offers o set shipping_fee = l.shipping_fee
+  from listings l
+  where l.id = o.listing_id and o.payment_method = 'cod' and o.shipping_fee = 0
+    and o.status in ('pending', 'accepted') and l.shipping_fee > 0;
 
 create index if not exists offers_listing_idx on offers (listing_id, status);
 

@@ -8,6 +8,7 @@ import {
   listingAvailable,
   normalizeShippingInfo,
   offerTotal,
+  quoteTotal,
   validatePaymentMethods,
 } from "../lib/payment";
 import type { Conversation, Message, Offer, Profile } from "../lib/types";
@@ -43,10 +44,11 @@ describe("數量推導（純函式）", () => {
     expect(deriveStatus(L(3, 0, 3))).toBe("sold");
     expect(deriveStatus(L(1, 1, 0))).toBe("reserved");
   });
-  it("offerTotal：貨到付款才加運費", () => {
-    expect(offerTotal({ amount: 300, quantity: 3, paymentMethod: "cod" }, { shippingFee: 60 })).toBe(960);
-    expect(offerTotal({ amount: 300, quantity: 3, paymentMethod: "meetup_cash" }, { shippingFee: 60 })).toBe(900);
-    expect(offerTotal({ amount: 300, quantity: 1, paymentMethod: "cod" }, { shippingFee: 0 })).toBe(300);
+  it("quoteTotal（試算）：貨到付款才加運費；offerTotal 讀出價上的運費快照", () => {
+    expect(quoteTotal({ amount: 300, quantity: 3, paymentMethod: "cod" }, { shippingFee: 60 })).toBe(960);
+    expect(quoteTotal({ amount: 300, quantity: 3, paymentMethod: "meetup_cash" }, { shippingFee: 60 })).toBe(900);
+    expect(quoteTotal({ amount: 300, quantity: 1, paymentMethod: "cod" }, { shippingFee: 0 })).toBe(300);
+    expect(offerTotal({ amount: 300, quantity: 3, shippingFee: 60 })).toBe(960);
   });
   it("收件資訊與物流單號驗證", () => {
     const ok = normalizeShippingInfo(SHIP);
@@ -176,7 +178,7 @@ describe("接受：以數量保留、不超賣", () => {
   it("demo repo 並行接受：可售 3 件，同時接受 2+2 只有一筆成功", async () => {
     const mk = (id: string, buyerId: string, q: number): Offer => ({
       id, listingId: "l_figure", buyerId, sellerId: "u_zhe", amount: 2500, message: "hi", messageHash: id, aiDrafted: false,
-      status: "pending", createdAt: new Date().toISOString(), quantity: q, paymentMethod: "meetup_cash",
+      status: "pending", createdAt: new Date().toISOString(), quantity: q, paymentMethod: "meetup_cash", shippingFee: 0,
     });
     const conv = (id: string, o: Offer): Conversation => ({ id, offerId: o.id, listingId: o.listingId, buyerId: o.buyerId, sellerId: o.sellerId, createdAt: o.createdAt });
     const msg = (id: string, c: string): Message => ({ id, conversationId: c, senderId: "u_an", body: "hi", aiDrafted: false, risk: "none", riskReasons: [], createdAt: new Date().toISOString() });
@@ -407,5 +409,50 @@ describe("MCP make_offer／get_listing", () => {
     expect((await call("make_offer", { listing_id: "l_figure", amount: 2400, message: "x", payment_method: "bitcoin" }, "u_ken")).error).toBeTruthy();
     expect((await call("make_offer", { listing_id: "l_figure", amount: 2400, message: "公仔四盒", quantity: 4 }, "u_ken")).error).toBeTruthy();
     expect((await call("make_offer", { listing_id: "l_figure", amount: 2400, message: "公仔匯款", payment_method: "bank_transfer" }, "u_ken")).error).toBeTruthy();
+  });
+});
+
+describe("審查修正", () => {
+  beforeEach(() => resetDemoStore());
+
+  it("封鎖後仍可取消訂單釋出數量（買賣雙方皆可）", async () => {
+    const a = await order("u_an", "l_figure", { quantity: 2 });
+    await svc.toggleBlock(await P("u_zhe"), "u_an");
+    expect(await svc.isBlockedBetween("u_an", "u_zhe")).toBe(true);
+    const sum = await svc.getOrderSummary(await P("u_an"), a.convId);
+    expect(sum.ok && sum.data!.myActions).toContain("cancel_order");
+    expect((await svc.cancelOrder(await P("u_an"), a.convId)).ok).toBe(true);
+    expect((await demoRepo.getListing("l_figure"))!.reservedQty).toBe(0);
+
+    const b = await order("u_mia", "l_figure", { quantity: 1 });
+    await svc.toggleBlock(await P("u_mia"), "u_zhe");
+    expect((await svc.cancelOrder(await P("u_zhe"), b.convId)).ok).toBe(true);
+    expect((await demoRepo.getListing("l_figure"))!.status).toBe("active");
+  });
+
+  it("運費快照：出價後物品改運費，訂單總額不變；非 cod 運費為 0", async () => {
+    const a = await order("u_an", "l_jacket", { paymentMethod: "cod" }, 3500, "外套貨到付款");
+    expect((await demoRepo.getOffer(a.offerId))!.shippingFee).toBe(60);
+    // 直接改 store（模擬日後的運費編輯）；updateListing 不會改付款方式與運費
+    const l = (await demoRepo.getListing("l_jacket"))!;
+    await demoRepo.updateListing({ ...l, shippingFee: 999, paymentMethods: ["bank_transfer"], title: "新標題" });
+    const after = (await demoRepo.getListing("l_jacket"))!;
+    expect([after.shippingFee, after.paymentMethods, after.title]).toEqual([60, ["meetup_cash", "cod"], "新標題"]);
+    (globalThis as unknown as { __pfStore: { listings: Map<string, { shippingFee: number }> } }).__pfStore.listings.get("l_jacket")!.shippingFee = 200;
+    const sum = await svc.getOrderSummary(await P("u_an"), a.convId);
+    expect(sum.ok && [sum.data!.shippingFee, sum.data!.total]).toEqual([60, 3560]);
+    expect(offerTotal((await demoRepo.getOffer(a.offerId))!)).toBe(3560);
+
+    const b = await order("u_ken", "l_figure", { quantity: 1 }, 2500, "公仔面交");
+    expect((await demoRepo.getOffer(b.offerId))!.shippingFee).toBe(0);
+  });
+
+  it("inbox 錯誤只用白名單代碼", () => {
+    expect(svc.respondErrorCode("剩餘數量不足")).toBe("insufficient");
+    expect(svc.respondErrorCode("任意文字 請點 http://evil")).toBe("unknown");
+    expect(svc.respondErrorText("insufficient")).toBe("剩餘數量不足");
+    expect(svc.respondErrorText("請加 LINE 客服 scam88")).toBeNull();
+    expect(svc.respondErrorText("__proto__")).toBeNull();
+    expect(svc.respondErrorText(undefined)).toBeNull();
   });
 });

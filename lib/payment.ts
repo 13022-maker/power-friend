@@ -72,11 +72,15 @@ export function deriveStatus(l: Qty): ListingStatus {
 }
 
 /** 運費只在貨到付款時加收 */
+/** 出價當下要快照到 offer 上的運費（貨到付款才收，其他付款方式為 0） */
 export const offerShippingFee = (o: Pick<Offer, "paymentMethod">, l: Pick<Listing, "shippingFee">) =>
   o.paymentMethod === "cod" ? l.shippingFee : 0;
 
-/** 總額 = 單價 × 數量 ＋（貨到付款時）運費 */
-export const offerTotal = (o: Pick<Offer, "amount" | "quantity" | "paymentMethod">, l: Pick<Listing, "shippingFee">) =>
+/** 已成立出價的總額 = 單價 × 數量 ＋ 出價當下快照的運費（不讀物品現值） */
+export const offerTotal = (o: Pick<Offer, "amount" | "quantity" | "shippingFee">) => o.amount * o.quantity + o.shippingFee;
+
+/** 出價前的試算（出價表單用）：運費取物品目前設定 */
+export const quoteTotal = (o: Pick<Offer, "amount" | "quantity" | "paymentMethod">, l: Pick<Listing, "shippingFee">) =>
   o.amount * o.quantity + offerShippingFee(o, l);
 
 /* ───────────── 驗證 ───────────── */

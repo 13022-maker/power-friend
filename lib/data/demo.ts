@@ -63,12 +63,16 @@ export const demoRepo: Repo = {
     store().listings.set(l.id, clone(l));
   },
   async updateListing(l) {
-    // 只更新可編輯欄位；數量計數與狀態只能經原子操作改變（與 Supabase 實作一致）
+    // 只更新可編輯欄位（與 Supabase 的 listingEditable 一致）：
+    // - 數量計數與狀態只能經原子操作改變；
+    // - 付款方式與運費不可經此修改：開放編輯時須另寫 service，重新跑 validatePaymentMethods（先付款類需賣家驗證）與運費驗證。
     const s = store();
     const cur = s.listings.get(l.id);
     if (!cur) return;
-    const { quantity: _q, reservedQty: _r, soldQty: _s, status: _st, sellerId: _sid, ...editable } = clone(l);
-    void _q, void _r, void _s, void _st, void _sid;
+    const {
+      quantity: _q, reservedQty: _r, soldQty: _s, status: _st, sellerId: _sid, paymentMethods: _pm, shippingFee: _sf, ...editable
+    } = clone(l);
+    void _q, void _r, void _s, void _st, void _sid, void _pm, void _sf;
     Object.assign(cur, editable);
   },
   async incrementViews(listingId) {

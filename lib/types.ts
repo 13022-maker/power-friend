@@ -82,6 +82,8 @@ export interface Offer {
   quantity: number;
   /** 必須在 listing.paymentMethods 內 */
   paymentMethod: PaymentMethod;
+  /** 運費快照：出價當下物品的運費（只有 cod 才有，其餘為 0）；之後物品改運費不影響這筆訂單 */
+  shippingFee: number;
   /** 貨到付款：賣家標記已寄出的時間 */
   shippedAt?: string;
   /** 選填物流單號：英數與 -，最多 40 字 */
