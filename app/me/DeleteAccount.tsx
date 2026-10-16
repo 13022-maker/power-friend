@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { deleteAccountAction } from "@/app/actions";
+import { callAction } from "@/lib/client-action";
 
 /** Alovoa 式刪除確認：必須輸入自己的顯示名稱才可送出 */
 export function DeleteAccount({ displayName, demo }: { displayName: string; demo: boolean }) {
@@ -35,8 +36,8 @@ export function DeleteAccount({ displayName, demo }: { displayName: string; demo
           if (!match) return;
           start(async () => {
             setErr(undefined);
-            const r = await deleteAccountAction(name);
-            if (r?.error) setErr(r.error); // 成功時 server action 會 redirect("/")
+            const r = await callAction(() => deleteAccountAction(name), setErr);
+            if (r?.error) setErr(r.error); // 成功時 server action 會 redirect("/")：其 redirect 例外由 callAction 交回 Next 導頁
           });
         }}
       >

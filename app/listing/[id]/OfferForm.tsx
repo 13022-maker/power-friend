@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { buyerSuggestAction, offerAction } from "@/app/actions";
+import { callAction } from "@/lib/client-action";
 import type { Suggestion } from "@/lib/ai/negotiate";
 import { formatNTD } from "@/lib/catalog";
 import { PAYMENT_HINTS, PAYMENT_LABELS, PREPAY_WARNING, isPrepay, quoteTotal } from "@/lib/payment";
@@ -34,7 +35,9 @@ export function OfferForm({
 
   const loadSugs = () =>
     start(async () => {
-      const r = await buyerSuggestAction(listingId);
+      const fail = (text: string) => setResult({ ok: false, text });
+      const r = await callAction(() => buyerSuggestAction(listingId), fail);
+      if (!r) return;
       if (r.ok) setSugs(r.data);
       else setResult({ ok: false, text: r.error });
     });
@@ -46,7 +49,9 @@ export function OfferForm({
 
   const submit = () =>
     start(async () => {
-      const r = await offerAction(listingId, Number(amount), message, aiDrafted, { quantity: qty, paymentMethod: method });
+      const fail = (text: string) => setResult({ ok: false, text });
+      const r = await callAction(() => offerAction(listingId, Number(amount), message, aiDrafted, { quantity: qty, paymentMethod: method }), fail);
+      if (!r) return;
       setResult(
         r.ok
           ? { ok: true, text: `出價已送出（${qty} 件・${PAYMENT_LABELS[method]}${r.total !== undefined ? `・總額 ${formatNTD(r.total)}` : ""}）。賣家接受後會開啟聊天室。`, notice: r.notice }

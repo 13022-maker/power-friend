@@ -3,6 +3,7 @@
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { analyzeAction, createListingAction } from "@/app/actions";
+import { callAction } from "@/lib/client-action";
 import { CATEGORIES, CONDITIONS, formatNTD } from "@/lib/catalog";
 import type { ItemAnalysis } from "@/lib/ai/vision";
 import { PAYMENT_HINTS, PAYMENT_LABELS, PAYMENT_METHODS, QTY_LIMITS, SHIPPING_FEE_MAX, isPrepay } from "@/lib/payment";
@@ -52,7 +53,8 @@ export function SellForm({ museEnabled, canPrepay }: { museEnabled: boolean; can
 
   const runAI = () =>
     startAnalyze(async () => {
-      const res = await analyzeAction(hint, fileName, photo);
+      const res = await callAction(() => analyzeAction(hint, fileName, photo), (text) => setMsg({ kind: "err", text }));
+      if (!res) return;
       if (!res.ok) return setMsg({ kind: "err", text: res.error });
       const r = res.data;
       setAi(r);
@@ -64,7 +66,7 @@ export function SellForm({ museEnabled, canPrepay }: { museEnabled: boolean; can
     startSave(async () => {
       const { original, ...rest } = form;
       const hasCod = methods.includes("cod");
-      const res = await createListingAction({
+      const res = await callAction(() => createListingAction({
         ...rest,
         price: Number(form.price),
         originalPrice: original ? Number(original) : undefined,
@@ -72,7 +74,8 @@ export function SellForm({ museEnabled, canPrepay }: { museEnabled: boolean; can
         quantity: qty.trim() === "" ? 1 : Number(qty),
         paymentMethods: PAYMENT_METHODS.filter((m) => methods.includes(m)), // 依固定順序送出
         shippingFee: hasCod ? (shippingFee.trim() === "" ? 0 : Number(shippingFee)) : undefined,
-      });
+      }), (text) => setMsg({ kind: "err", text }));
+      if (!res) return;
       if (res.error) return setMsg({ kind: "err", text: res.error });
       if (res.notice) setMsg({ kind: "warn", text: res.notice });
       router.push(`/listing/${res.id}`);

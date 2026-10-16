@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { chatSuggestAction, sendMessageAction } from "@/app/actions";
+import { callAction } from "@/lib/client-action";
 import type { Suggestion } from "@/lib/ai/negotiate";
 import type { Message } from "@/lib/types";
 import { messageFromRow, realtimeClient } from "@/lib/realtime";
@@ -99,7 +100,8 @@ export function ChatRoom({
   const send = () =>
     start(async () => {
       setErr(undefined);
-      const r = await sendMessageAction(conversationId, text, aiDrafted);
+      const r = await callAction(() => sendMessageAction(conversationId, text, aiDrafted), setErr);
+      if (!r) return; // 連線失敗：保留輸入內容，可直接重送
       if (!r.ok) return setErr(r.error);
       setMsgs((m) => mergeMessages(m, [r.message]));
       setText("");
@@ -150,7 +152,8 @@ export function ChatRoom({
         <div className="chat-input">
           <button className="btn ghost small" title="AI 議價助手" disabled={pending} onClick={() =>
               start(async () => {
-                const r = await chatSuggestAction(conversationId);
+                const r = await callAction(() => chatSuggestAction(conversationId), setErr);
+                if (!r) return;
                 if (r.ok) setSugs(r.data);
                 else setErr(r.error);
               })

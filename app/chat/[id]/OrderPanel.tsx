@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { cancelOrderAction, completeDealAction, markShippedAction, setShippingInfoAction } from "@/app/actions";
+import { callAction } from "@/lib/client-action";
 import { formatNTD } from "@/lib/catalog";
 import { OFFER_STATUS_LABELS, SHIPPING_LIMITS, SHIPPING_METHOD_LABELS, SHIPPING_METHODS, TRACKING_NO_MAX } from "@/lib/payment";
 import type { OrderSummary } from "@/lib/services";
@@ -34,7 +35,8 @@ export function OrderPanel({ order, shipping, blocked }: { order: OrderSummary; 
   const run = (fn: () => Promise<{ ok: true } | { ok: false; error: string }>, after?: () => void) =>
     start(async () => {
       setErr(undefined);
-      const r = await fn();
+      const r = await callAction(fn, setErr);
+      if (!r) return;
       if (!r.ok) return setErr(r.error);
       after?.();
       router.refresh();
