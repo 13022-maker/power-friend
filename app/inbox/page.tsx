@@ -4,12 +4,21 @@ import { currentUser } from "@/lib/session";
 import { respondOfferAction } from "@/app/actions";
 import { formatNTD } from "@/lib/catalog";
 import { Thumb, TrustBadge } from "@/components/ui";
+import { PAYMENT_LABELS, offerTotal } from "@/lib/payment";
 import type { Listing, Offer, Profile } from "@/lib/types";
+
+/** 「2 件・貨到付款・總額 NT$5,060」 */
+function orderLine(o: Offer, l?: Listing) {
+  const parts = [`${o.quantity} 件`, PAYMENT_LABELS[o.paymentMethod]];
+  if (l) parts.push(`總額 ${formatNTD(offerTotal(o, l))}`);
+  return parts.join("・");
+}
 
 const STATUS: Record<Offer["status"], string> = { pending: "等待回覆", accepted: "已接受", declined: "已婉拒", completed: "已成交", cancelled: "已取消" };
 
-export default async function InboxPage() {
+export default async function InboxPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const me = await currentUser();
+  const { error } = await searchParams;
   const r = repo();
   const [received, sent, convs, listings, profiles] = await Promise.all([
     r.listOffers({ sellerId: me.id }),
@@ -34,6 +43,7 @@ export default async function InboxPage() {
     <>
       <h1>出價與聊天</h1>
       <p className="lead">賣家接受出價後才會開啟聊天室。AI 會依行情提示每筆出價是否合理。</p>
+      {typeof error === "string" && error && <div className="notice err" style={{ marginBottom: 12 }}>{error.slice(0, 120)}</div>}
 
       <h2>收到的出價（{received.filter((o) => o.status === "pending").length} 筆待處理）</h2>
       {received.length === 0 ? (
@@ -56,9 +66,11 @@ export default async function InboxPage() {
                   </div>
                   <div className="muted">
                     {l?.title}・出價 <span className="price">{formatNTD(o.amount)}</span>
+                    {o.quantity > 1 && " /件"}
                     {l && ` / 售價 ${formatNTD(l.price)}`}
                     {low && <span style={{ color: "var(--warn)" }}>・低於行情</span>}
                   </div>
+                  <div className="muted">{orderLine(o, l)}{o.status !== "pending" && `・${STATUS[o.status]}`}</div>
                   <div style={{ fontSize: 14 }}>「{o.message}」</div>
                 </div>
                 {o.status === "pending" ? (
@@ -94,8 +106,9 @@ export default async function InboxPage() {
                 <div className="grow">
                   <Link href={`/listing/${o.listingId}`}><strong>{l?.title}</strong></Link>
                   <div className="muted">
-                    出價 <span className="price">{formatNTD(o.amount)}</span>・{P.get(o.sellerId)?.displayName}
+                    出價 <span className="price">{formatNTD(o.amount)}</span>{o.quantity > 1 && " /件"}・{P.get(o.sellerId)?.displayName}
                   </div>
+                  <div className="muted">{orderLine(o, l)}・{STATUS[o.status]}</div>
                 </div>
                 {conv ? <Link className="btn small" href={`/chat/${conv.id}`}>聊天</Link> : <span className="muted">{STATUS[o.status]}</span>}
               </div>
