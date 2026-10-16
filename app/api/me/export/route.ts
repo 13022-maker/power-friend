@@ -9,6 +9,7 @@ export async function GET() {
   return new NextResponse(JSON.stringify(data, null, 2), {
     headers: {
       "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store", // 含收件資訊等個資，不可被快取
       "content-disposition": `attachment; filename="power-friend-${uid}.json"`,
     },
   });

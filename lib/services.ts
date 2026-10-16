@@ -67,7 +67,7 @@ export async function explore(
 
   const ranked: RankedListing[] = [];
   for (const l of listings) {
-    if (l.status === "sold" || l.sellerId === viewer.id || blocked.has(l.sellerId)) continue;
+    if (l.status === "sold" || l.sellerId === viewer.id || blocked.has(l.sellerId)) continue; // 狀態由數量推導（lib/payment.ts#deriveStatus）
     if (opts.category && l.category !== opts.category) continue;
     const seller = byId.get(l.sellerId);
     if (!seller) continue;
@@ -82,7 +82,7 @@ export async function explore(
     let score: number;
     if (opts.mode === "nearby") score = -dist;
     else if (opts.mode === "taste") score = fit;
-    else score = 0.35 * fit + 0.35 * trust + 30 * fair - 0.5 * Math.min(dist, 30) + (l.status === "reserved" ? -40 : 0);
+    else score = 0.35 * fit + 0.35 * trust + 30 * fair - 0.5 * Math.min(dist, 30) + (listingAvailable(l) === 0 ? -40 : 0);
     if (qVec) score += relevance * 100;
 
     ranked.push({ ...l, seller, distanceKm: dist, tasteFit: fit, trust, score });

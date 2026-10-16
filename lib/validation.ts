@@ -29,3 +29,14 @@ export const isReportReason = (x: unknown): x is ReportReason =>
 /** 價格／出價金額：整數 1..10,000,000 */
 export const isValidAmount = (n: unknown): n is number =>
   typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= LIMITS.priceMax;
+
+/** 數量、付款方式、收件資訊、物流單號的驗證集中在 lib/payment.ts，這裡轉出方便同一處 import */
+export {
+  isPaymentMethod,
+  isShippingMethod,
+  isValidQuantity,
+  isValidShippingFee,
+  isValidTrackingNo,
+  normalizeShippingInfo,
+  validatePaymentMethods,
+} from "./payment";
