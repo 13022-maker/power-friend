@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { chatSuggestAction, completeDealAction, sendMessageAction } from "@/app/actions";
+import { useRouter } from "next/navigation";
+import { chatSuggestAction, sendMessageAction } from "@/app/actions";
 import type { Suggestion } from "@/lib/ai/negotiate";
 import type { Message } from "@/lib/types";
 import { messageFromRow, realtimeClient } from "@/lib/realtime";
@@ -26,15 +27,11 @@ export function ChatRoom({
   conversationId,
   meId,
   initial,
-  isSeller,
-  sold,
   blocked,
 }: {
   conversationId: string;
   meId: string;
   initial: Message[];
-  isSeller: boolean;
-  sold: boolean;
   blocked: boolean;
 }) {
   const [msgs, setMsgs] = useState(initial);
@@ -42,9 +39,16 @@ export function ChatRoom({
   const [aiDrafted, setAiDrafted] = useState(false);
   const [sugs, setSugs] = useState<Suggestion[]>();
   const [err, setErr] = useState<string>();
-  const [done, setDone] = useState(sold);
   const [pending, start] = useTransition();
   const logRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  // 對方改變訂單狀態（填收件資訊、寄出、成交、取消）時會寫系統訊息；收到新的系統訊息就重新整理訂單面板
+  const sysCount = msgs.filter((m) => m.senderId === "system").length;
+  const sysSeen = useRef(sysCount);
+  useEffect(() => {
+    if (sysCount > sysSeen.current) router.refresh();
+    sysSeen.current = sysCount;
+  }, [sysCount, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,22 +169,6 @@ export function ChatRoom({
           />
           <button className="btn" onClick={send} disabled={pending || !text.trim()}>送出</button>
         </div>
-      )}
-      {isSeller && !done && !blocked && (
-        <button
-          className="btn green small"
-          style={{ marginTop: 8, alignSelf: "flex-end" }}
-          disabled={pending}
-          onClick={() =>
-            start(async () => {
-              const r = await completeDealAction(conversationId);
-              if (r.ok) setDone(true);
-              else setErr(r.error);
-            })
-          }
-        >
-          面交完成，標記成交
-        </button>
       )}
     </div>
   );

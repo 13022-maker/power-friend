@@ -2,7 +2,7 @@
  * 數量、付款方式、貨到付款的共用常數與純函式（server／client 都可 import，不含 server-only 相依）。
  * 平台不經手金流：付款方式只是買賣雙方約定的方式，平台記錄並提示風險，不收款、不代收。
  */
-import type { Listing, ListingStatus, Offer, PaymentMethod, ShippingInfo, ShippingMethod, VerificationLevel } from "./types";
+import type { Listing, ListingStatus, Offer, OfferStatus, PaymentMethod, ShippingInfo, ShippingMethod, VerificationLevel } from "./types";
 
 export const PAYMENT_METHODS = ["meetup_cash", "cod", "bank_transfer", "mobile_pay"] as const satisfies readonly PaymentMethod[];
 
@@ -29,6 +29,15 @@ export const isPrepay = (m: PaymentMethod) => PREPAY_METHODS.includes(m);
 
 /** 先付款類出價成功時附上的固定提醒 */
 export const PREPAY_WARNING = "先付款是詐騙最常見的手法，請確認賣家身分與成交紀錄，切勿點擊對方給的付款連結";
+
+/** 出價／訂單狀態的中文標籤（UI 共用） */
+export const OFFER_STATUS_LABELS: Record<OfferStatus, string> = {
+  pending: "等待回覆",
+  accepted: "保留中",
+  declined: "已婉拒",
+  completed: "已成交",
+  cancelled: "已取消",
+};
 
 export const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = ["meetup_cash"];
 

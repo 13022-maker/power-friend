@@ -4,7 +4,7 @@ import { currentUser } from "@/lib/session";
 import { respondOfferAction } from "@/app/actions";
 import { formatNTD } from "@/lib/catalog";
 import { Thumb, TrustBadge } from "@/components/ui";
-import { PAYMENT_LABELS, offerTotal } from "@/lib/payment";
+import { OFFER_STATUS_LABELS, PAYMENT_LABELS, offerTotal } from "@/lib/payment";
 import type { Listing, Offer, Profile } from "@/lib/types";
 
 /** 「2 件・貨到付款・總額 NT$5,060」 */
@@ -14,7 +14,7 @@ function orderLine(o: Offer, l?: Listing) {
   return parts.join("・");
 }
 
-const STATUS: Record<Offer["status"], string> = { pending: "等待回覆", accepted: "已接受", declined: "已婉拒", completed: "已成交", cancelled: "已取消" };
+const STATUS: Record<Offer["status"], string> = { ...OFFER_STATUS_LABELS, accepted: "已接受" };
 
 export default async function InboxPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const me = await currentUser();
